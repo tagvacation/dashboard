@@ -1,0 +1,10 @@
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacksPlan]
+aptPkgs = ["ffmpeg"]
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+restartPolicyType = "ON_FAILURE"
