@@ -669,7 +669,7 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
     setDeleting(false)
   }
 
-  // ── Step 1: Get signed URL then upload DIRECTLY to GCS (bypasses Next.js limit)
+  // ── Step 1: Upload to GCS — tries signed URL first, falls back to chunked ──────
   const uploadToGcs = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     e.target.value = ''
@@ -678,42 +678,72 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
     if (sizeMB > 1024) { setError(`File too large: ${sizeMB.toFixed(0)}MB (max 1GB)`); return }
     setGcsUploading(true); setError(''); setGcsProgress(0); setGcsReady(false)
 
-    // Get signed URL from server (small JSON request, no body size issue)
-    let signedUrl = ''
-    try {
-      const presignRes = await fetch(`/api/stories/${story.story_id}/presign`)
-      const presignData = await presignRes.json()
-      if (!presignRes.ok || !presignData.signedUrl) {
-        setError(presignData.error || 'Failed to get upload URL'); setGcsUploading(false); return
-      }
-      signedUrl = presignData.signedUrl
-    } catch { setError('Failed to connect to server'); setGcsUploading(false); return }
+    // Try signed URL first (fastest, no server load)
+    const presignRes = await fetch(`/api/stories/${story.story_id}/presign`).catch(() => null)
+    const presignData = presignRes?.ok ? await presignRes.json() : null
 
-    // Upload DIRECTLY to GCS using signed URL — bypasses Next.js entirely
-    const xhr = new XMLHttpRequest()
-    xhr.open('PUT', signedUrl) // PUT directly to GCS, not to Next.js
-    xhr.setRequestHeader('Content-Type', 'video/mp4')
-    xhr.upload.onprogress = ev => { if (ev.lengthComputable) setGcsProgress(Math.round(ev.loaded / ev.total * 100)) }
-    xhr.onload = async () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        // Confirm with server (small request, no body size issue)
-        const confirmRes = await fetch(`/api/stories/${story.story_id}/presign`, { method: 'POST' })
-        const confirmData = await confirmRes.json()
-        if (confirmRes.ok) {
-          setGcsReady(true); setGcsProgress(100)
-          onUpdate({ ...story, status: 'post_produced' })
-        } else {
-          setError(confirmData.error || 'Upload verify failed')
+    if (presignData?.signedUrl) {
+      // ── Direct GCS upload via signed URL ──
+      await new Promise<void>((resolve) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', presignData.signedUrl)
+        xhr.setRequestHeader('Content-Type', 'video/mp4')
+        xhr.upload.onprogress = ev => { if (ev.lengthComputable) setGcsProgress(Math.round(ev.loaded / ev.total * 100)) }
+        xhr.onload = async () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            const confirmRes = await fetch(`/api/stories/${story.story_id}/presign`, { method: 'POST' })
+            if (confirmRes.ok) { setGcsReady(true); setGcsProgress(100); onUpdate({ ...story, status: 'post_produced' }) }
+            else { const d = await confirmRes.json(); setError(d.error || 'Verify failed') }
+          } else {
+            // CORS blocked or other error — fallback to chunked
+            setError('') // clear error, falling back to chunked
+            await uploadChunked(file)
+          }
+          setGcsUploading(false); resolve()
         }
-      } else {
-        setError(`GCS upload failed (HTTP ${xhr.status})`)
-      }
+        xhr.onerror = async () => { await uploadChunked(file); setGcsUploading(false); resolve() }
+        xhr.timeout = 20 * 60 * 1000
+        xhr.ontimeout = () => { setError('Upload timed out — try again'); setGcsUploading(false); resolve() }
+        xhr.send(file)
+      })
+    } else {
+      // ── Chunked upload (always works, 8MB chunks under Next.js 10MB limit) ──
+      await uploadChunked(file)
       setGcsUploading(false)
     }
-    xhr.onerror = () => { setError('Network error during upload'); setGcsUploading(false) }
-    xhr.timeout = 20 * 60 * 1000 // 20 min for large files
-    xhr.ontimeout = () => { setError('Upload timed out — try again'); setGcsUploading(false) }
-    xhr.send(file)
+  }
+
+  const uploadChunked = async (file: File) => {
+    const CHUNK = 8 * 1024 * 1024 // 8MB — safely under Next.js 10MB limit
+    const total = Math.ceil(file.size / CHUNK)
+    setError('')
+
+    for (let i = 0; i < total; i++) {
+      const chunk = file.slice(i * CHUNK, (i + 1) * CHUNK)
+      setGcsProgress(Math.round((i / total) * 95)) // 0-95% during upload
+
+      const res = await new Promise<Response>((resolve, reject) => {
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `/api/stories/${story.story_id}/upload-chunk`)
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+        xhr.setRequestHeader('X-Chunk-Index', String(i))
+        xhr.setRequestHeader('X-Total-Chunks', String(total))
+        xhr.onload = () => resolve(new Response(xhr.responseText, { status: xhr.status }))
+        xhr.onerror = () => reject(new Error('Network error'))
+        xhr.timeout = 60_000
+        xhr.ontimeout = () => reject(new Error('Chunk timed out'))
+        xhr.send(chunk)
+      })
+
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        setError(d.error || `Chunk ${i + 1}/${total} failed`)
+        return
+      }
+    }
+
+    setGcsProgress(100); setGcsReady(true)
+    onUpdate({ ...story, status: 'post_produced' })
   }
 
   // ── Step 2: Publish to YouTube (server reads from GCS, no client body) ────────
