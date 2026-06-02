@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import db from '@/lib/db'
 import { runPipeline } from '@/lib/pipeline/runner'
 
+export const dynamic = 'force-dynamic'
+
+
 function generateStoryId() {
   const now = new Date()
   const y = now.getFullYear()

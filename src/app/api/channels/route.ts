@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { channelsDb } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
+
 export async function GET() {
   // Default channel always from env
   const defaultChannel = {

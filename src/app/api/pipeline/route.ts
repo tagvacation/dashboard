@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import db from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
+
 export async function GET() {
   const runs = db.prepare(
     'SELECT story_id, status, topic, theme, completed_clips, filtered_clips, operation_ids, created_at, updated_at, error FROM pipeline_runs ORDER BY created_at DESC LIMIT 20'

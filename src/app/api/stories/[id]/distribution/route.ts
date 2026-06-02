@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
+export const dynamic = 'force-dynamic'
+
+
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
 const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.googleapis.com/auth/spreadsheets'] })
 

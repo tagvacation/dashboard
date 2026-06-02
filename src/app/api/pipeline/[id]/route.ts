@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import db from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
+
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const run = db.prepare('SELECT * FROM pipeline_runs WHERE story_id = ?').get(id)

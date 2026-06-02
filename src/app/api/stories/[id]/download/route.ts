@@ -3,6 +3,9 @@ import { listStoryFiles, getFileStream } from '@/lib/gcs'
 import archiver from 'archiver'
 import { PassThrough } from 'stream'
 
+export const dynamic = 'force-dynamic'
+
+
 export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: storyId } = await params
 

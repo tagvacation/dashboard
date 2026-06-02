@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { channelsDb } from '@/lib/db'
 
+export const dynamic = 'force-dynamic'
+
+
 export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params
   const body = await req.json()

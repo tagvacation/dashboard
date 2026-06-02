@@ -6,6 +6,9 @@ import { join } from 'path'
 import { writeFile, unlink, readFile } from 'fs/promises'
 import { google } from 'googleapis'
 
+export const dynamic = 'force-dynamic'
+
+
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
 const storage = new Storage({ credentials })
 const bucket = storage.bucket(process.env.GCS_BUCKET!)
