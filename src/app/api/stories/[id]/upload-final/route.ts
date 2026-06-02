@@ -7,6 +7,12 @@ import { Readable } from 'stream'
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300 // 5 min — large video uploads need time
 
+function isAuthorized(req: NextRequest): boolean {
+  const token = req.cookies.get('auth_token')?.value
+  const expected = Buffer.from(`${process.env.DASHBOARD_PASSWORD}:${process.env.JWT_SECRET}`).toString('base64')
+  return token === expected
+}
+
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
 const storage = new Storage({ credentials })
 const bucket = storage.bucket(process.env.GCS_BUCKET!)
@@ -15,6 +21,10 @@ const auth = new google.auth.GoogleAuth({ credentials, scopes: ['https://www.goo
 const colLetter = (i: number) => String.fromCharCode(65 + i)
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   const { id: storyId } = await params
 
   try {
