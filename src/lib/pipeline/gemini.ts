@@ -2,8 +2,7 @@ import { settingsDb } from '../db'
 import type { Script, Scene } from './types'
 
 // Direct Gemini API (not Vertex AI) — same as n8n's googlePalmApi
-// Supports: gemini-2.0-flash, gemini-2.5-flash-preview-05-20, gemini-1.5-flash-002
-const GEMINI_MODEL = 'gemini-2.0-flash'
+const GEMINI_MODEL = 'gemini-2.5-flash'
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
 async function callGemini(systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
