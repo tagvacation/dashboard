@@ -1,7 +1,4 @@
-export async function register() {
-  // Only run on Node.js server (not Edge runtime)
-  if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { startCron } = await import('./lib/cron')
-    startCron()
-  }
-}
+// Instrumentation hook — intentionally empty.
+// Cron is handled by Railway's built-in cron job service
+// which calls POST /api/cron every minute.
+export async function register() {}
