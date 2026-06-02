@@ -2,7 +2,7 @@ import { getAccessToken, GCP_PROJECT, GCP_REGION } from './auth'
 import { settingsDb } from '../db'
 import type { Script, Scene } from './types'
 
-const GEMINI_MODEL = 'gemini-2.0-flash'
+const GEMINI_MODEL = 'gemini-2.0-flash-001'
 const BASE = `https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT}/locations/${GCP_REGION}/publishers/google/models`
 
 async function callGemini(systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
