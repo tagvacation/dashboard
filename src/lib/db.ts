@@ -122,6 +122,10 @@ async function createTables() {
     )
   `
   await sql`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status ON scheduled_posts (status, scheduled_at)`
+  // Add metadata columns to scheduled_posts if missing
+  await sql`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS title TEXT DEFAULT ''`
+  await sql`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''`
+  await sql`ALTER TABLE scheduled_posts ADD COLUMN IF NOT EXISTS tags TEXT DEFAULT 'shorts,hindi story,kathakar'`
   await sql`
     CREATE TABLE IF NOT EXISTS stories (
       story_id TEXT PRIMARY KEY,
@@ -467,17 +471,23 @@ export interface ScheduledPost {
   id: number; story_id: string; channel_id: string; platform: string
   scheduled_at: string; status: string; posted_at: string | null
   result_url: string; error: string; created_at: string
+  title: string; description: string; tags: string
 }
 
 export const scheduledPostsDb = {
-  create: async (post: Pick<ScheduledPost, 'story_id' | 'channel_id' | 'platform' | 'scheduled_at'>): Promise<ScheduledPost> => {
+  create: async (post: Pick<ScheduledPost, 'story_id' | 'channel_id' | 'platform' | 'scheduled_at' | 'title' | 'description' | 'tags'>): Promise<ScheduledPost> => {
     await ensureDb()
     const [row] = await sql<ScheduledPost[]>`
-      INSERT INTO scheduled_posts (story_id, channel_id, platform, scheduled_at)
-      VALUES (${post.story_id}, ${post.channel_id}, ${post.platform}, ${post.scheduled_at})
+      INSERT INTO scheduled_posts (story_id, channel_id, platform, scheduled_at, title, description, tags)
+      VALUES (${post.story_id}, ${post.channel_id}, ${post.platform}, ${post.scheduled_at}, ${post.title}, ${post.description}, ${post.tags})
       RETURNING *
     `
     return row
+  },
+
+  update_meta: async (id: number, title: string, description: string, tags: string): Promise<void> => {
+    await ensureDb()
+    await sql`UPDATE scheduled_posts SET title = ${title}, description = ${description}, tags = ${tags} WHERE id = ${id}`
   },
   getPending: async (): Promise<ScheduledPost[]> => {
     await ensureDb()

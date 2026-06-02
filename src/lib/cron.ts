@@ -30,11 +30,16 @@ async function processScheduledPosts() {
           if (!check.ok) throw new Error('Final reel not in GCS. Upload the edited video first.')
 
           console.log(`[Cron] Uploading ${post.story_id} to YouTube...`)
+          // Use saved title/description/tags from scheduled post (user-edited)
+          const ytTitle = post.title || story.topic.slice(0, 100)
+          const ytDesc  = post.description || `${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`
+          const ytTags  = post.tags ? post.tags.split(',').map(t => t.trim()).filter(Boolean) : ['shorts', 'hindi story', 'kathakar']
+
           const result = await uploadToYouTube({
             videoPath: gcsUrl,
-            title: story.topic.slice(0, 100),
-            description: `${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`,
-            tags: ['shorts', 'hindi story', 'moral story', 'kathakar'],
+            title: ytTitle,
+            description: ytDesc,
+            tags: ytTags,
             isShort: true,
           })
 

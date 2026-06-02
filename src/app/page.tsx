@@ -743,11 +743,16 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   const [ytUploading, setYtUploading] = useState(false)
 
   // Schedule state
-  const [scheduledPost, setScheduledPost] = useState<{ id: number; scheduled_at: string; status: string } | null>(null)
+  const [scheduledPost, setScheduledPost] = useState<{ id: number; scheduled_at: string; status: string; title: string; description: string; tags: string } | null>(null)
   const [showScheduler, setShowScheduler] = useState(false)
   const [scheduleDate, setScheduleDate] = useState('')
   const [scheduleTime, setScheduleTime] = useState('23:00')
+  const [schedTitle, setSchedTitle] = useState(story.topic.slice(0, 90))
+  const [schedDesc, setSchedDesc] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
+  const [schedTags, setSchedTags] = useState('shorts,hindi story,moral story,kathakar')
   const [scheduling, setScheduling] = useState(false)
+  const [savingMeta, setSavingMeta] = useState(false)
+  const [metaSaved, setMetaSaved] = useState(false)
 
   const [error, setError] = useState('')
   const [showManual, setShowManual] = useState(false)
@@ -757,50 +762,60 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
 
   // Load existing schedule for this story
   useEffect(() => {
-    fetch(`/api/schedule`).then(r => r.json()).then(d => {
+    fetch('/api/schedule').then(r => r.json()).then(d => {
       const post = (d.posts || []).find((p: { story_id: string }) => p.story_id === story.story_id)
-      if (post) setScheduledPost(post)
+      if (post) {
+        setScheduledPost(post)
+        if (post.title) setSchedTitle(post.title)
+        if (post.description) setSchedDesc(post.description)
+        if (post.tags) setSchedTags(post.tags)
+      }
     })
-    // Default date = today
     setScheduleDate(new Date().toISOString().split('T')[0])
   }, [story.story_id])
 
   const scheduleUpload = async () => {
     if (!scheduleDate || !scheduleTime) return
     setScheduling(true); setError('')
-
-    // Combine date + time in IST, convert to UTC
-    const dtStr = `${scheduleDate}T${scheduleTime}:00+05:30`
-    const scheduledAt = new Date(dtStr).toISOString()
-
+    const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00+05:30`).toISOString()
     const res = await fetch('/api/schedule', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ story_id: story.story_id, platform: 'youtube', scheduled_at: scheduledAt }),
+      body: JSON.stringify({
+        story_id: story.story_id, platform: 'youtube',
+        scheduled_at: scheduledAt,
+        title: schedTitle, description: schedDesc, tags: schedTags,
+      }),
     })
     const data = await res.json()
-    if (res.ok) {
-      setScheduledPost(data.post)
-      setShowScheduler(false)
-    } else {
-      setError(data.error || 'Failed to schedule')
-    }
+    if (res.ok) { setScheduledPost(data.post); setShowScheduler(false) }
+    else setError(data.error || 'Failed to schedule')
     setScheduling(false)
   }
 
   const cancelSchedule = async () => {
-    if (!scheduledPost) return
+    if (!scheduledPost || !confirm('Cancel this scheduled post?')) return
     await fetch('/api/schedule', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: scheduledPost.id }) })
     setScheduledPost(null)
   }
 
-  // IST preset times
+  const saveMeta = async () => {
+    if (!scheduledPost) return
+    setSavingMeta(true)
+    await fetch('/api/schedule', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: scheduledPost.id, title: schedTitle, description: schedDesc, tags: schedTags }),
+    })
+    setScheduledPost(p => p ? { ...p, title: schedTitle, description: schedDesc, tags: schedTags } : p)
+    setSavingMeta(false); setMetaSaved(true); setTimeout(() => setMetaSaved(false), 2000)
+  }
+
   const IST_PRESETS = [
+    { label: '9 PM',  time: '21:00' },
+    { label: '10 PM', time: '22:00' },
     { label: '11 PM', time: '23:00' },
-    { label: '8 PM',  time: '20:00' },
     { label: '7 PM',  time: '19:00' },
-    { label: '6 PM',  time: '18:00' },
-    { label: '9 AM',  time: '09:00' },
+    { label: '8 AM',  time: '08:00' },
   ]
 
   // ── Save manual URL ─────────────────────────────────────────────────────────
@@ -1068,117 +1083,212 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
         )}
       </div>
 
-      {/* ── STEP 2: Publish now OR Schedule ── */}
-      <div className={`rounded-xl border transition-all ${!gcsReady ? 'opacity-40 pointer-events-none border-gray-100 bg-gray-50' : 'border-gray-200 bg-white'}`}>
-        <div className="p-3 border-b border-gray-100 flex items-center gap-2">
-          <span className="text-base">2️⃣</span>
-          <p className="text-xs font-semibold text-gray-700">Step 2: Publish to YouTube</p>
-          {!gcsReady && <span className="text-xs text-gray-400">(complete step 1 first)</span>}
+      {/* ── STEP 2: YouTube Details + Publish / Schedule ── */}
+      <div className={`rounded-2xl border transition-all overflow-hidden ${!gcsReady ? 'opacity-40 pointer-events-none border-gray-100' : 'border-gray-200'}`}>
+        {/* Header */}
+        <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center gap-2">
+          <span className="text-red-600 text-lg">▶</span>
+          <div>
+            <p className="text-sm font-semibold text-gray-800">Step 2: YouTube Shorts</p>
+            {!gcsReady && <p className="text-xs text-gray-400">Complete step 1 first</p>}
+          </div>
+          {scheduledPost?.status === 'pending' && (
+            <span className="ml-auto text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+              ⏰ Scheduled
+            </span>
+          )}
+          {scheduledPost?.status === 'posted' && (
+            <span className="ml-auto text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full font-medium">
+              ✅ Published
+            </span>
+          )}
         </div>
 
-        {/* If already scheduled */}
-        {scheduledPost && scheduledPost.status === 'pending' ? (
-          <div className="p-3 space-y-2">
-            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
-              <span className="text-lg">⏰</span>
-              <div className="flex-1">
-                <p className="text-xs font-semibold text-amber-800">Scheduled</p>
-                <p className="text-xs text-amber-700">
-                  {new Date(scheduledPost.scheduled_at).toLocaleString('en-IN', {
-                    weekday: 'short', day: 'numeric', month: 'short',
-                    hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
-                  })} IST
-                </p>
-              </div>
-              <button onClick={cancelSchedule} className="text-xs text-red-400 hover:text-red-600 font-medium shrink-0">Cancel</button>
-            </div>
-            <p className="text-xs text-gray-400 text-center">Server will auto-upload at scheduled time</p>
-          </div>
-        ) : scheduledPost && scheduledPost.status === 'posted' ? (
-          <div className="p-3">
-            <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 flex items-center gap-2">
-              <span className="text-lg">✅</span>
-              <p className="text-xs text-emerald-700 font-medium">Auto-published successfully!</p>
-            </div>
-          </div>
-        ) : ytUploading ? (
-          <div className="p-3 text-center">
-            <svg className="animate-spin w-5 h-5 text-red-500 mx-auto mb-1" fill="none" viewBox="0 0 24 24">
+        {ytUploading ? (
+          <div className="p-6 text-center">
+            <svg className="animate-spin w-8 h-8 text-red-500 mx-auto mb-2" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
-            <p className="text-xs text-red-600 font-medium">Uploading to YouTube...</p>
+            <p className="text-sm font-medium text-gray-700">Uploading to YouTube...</p>
+            <p className="text-xs text-gray-400 mt-1">This may take 2-5 minutes</p>
           </div>
         ) : (
-          <div className="p-3 space-y-2">
-            {/* Publish now */}
-            <button onClick={publishToYoutube} disabled={!gcsReady}
-              className="w-full py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold transition-colors">
-              ▶ Publish Now
-            </button>
+          <div className="p-4 space-y-4">
+            {/* Video metadata editor — always visible, saved to DB */}
+            <div className="space-y-3">
+              {/* Title */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-600">Title</label>
+                  <span className={`text-xs font-mono ${schedTitle.length > 90 ? 'text-red-500' : 'text-gray-300'}`}>
+                    {schedTitle.length}/100
+                  </span>
+                </div>
+                <input
+                  value={schedTitle}
+                  onChange={e => setSchedTitle(e.target.value)}
+                  maxLength={100}
+                  placeholder="YouTube video title..."
+                  className="w-full px-3 py-2.5 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors"
+                />
+              </div>
 
-            {/* Schedule divider */}
-            <div className="flex items-center gap-2">
-              <div className="flex-1 h-px bg-gray-100" />
-              <span className="text-xs text-gray-400">or</span>
-              <div className="flex-1 h-px bg-gray-100" />
+              {/* Description */}
+              <div>
+                <label className="text-xs font-semibold text-gray-600 block mb-1.5">Description</label>
+                <textarea
+                  value={schedDesc}
+                  onChange={e => setSchedDesc(e.target.value)}
+                  rows={4}
+                  placeholder="Video description..."
+                  className="w-full px-3 py-2.5 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors resize-none leading-relaxed"
+                />
+              </div>
+
+              {/* Tags */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-gray-600">Tags</label>
+                  <span className="text-xs text-gray-300">{schedTags.split(',').filter(Boolean).length} tags</span>
+                </div>
+                <input
+                  value={schedTags}
+                  onChange={e => setSchedTags(e.target.value)}
+                  placeholder="shorts, hindi story, moral story, kathakar"
+                  className="w-full px-3 py-2.5 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors"
+                />
+                <p className="text-xs text-gray-400 mt-1">Comma separated</p>
+              </div>
             </div>
 
-            {/* Schedule button */}
-            {!showScheduler ? (
-              <button onClick={() => setShowScheduler(true)}
-                className="w-full py-2.5 bg-gray-50 hover:bg-gray-100 border border-gray-200 text-gray-600 rounded-xl text-xs font-semibold transition-colors flex items-center justify-center gap-2">
-                <span>⏰</span> Schedule for Later
-              </button>
-            ) : (
-              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-3">
-                <p className="text-xs font-semibold text-amber-800">📅 Schedule Upload (IST)</p>
+            {error && (
+              <div className="px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex gap-2">
+                <span className="shrink-0">❌</span><span>{error}</span>
+              </div>
+            )}
 
-                {/* Quick IST presets */}
-                <div className="flex gap-1.5 flex-wrap">
-                  {IST_PRESETS.map(p => (
-                    <button key={p.time} onClick={() => setScheduleTime(p.time)}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all
-                        ${scheduleTime === p.time ? 'bg-amber-500 text-white' : 'bg-white border border-amber-200 text-amber-700 hover:bg-amber-50'}`}>
-                      {p.label}
+            {/* ── If scheduled → show details + save + cancel ── */}
+            {scheduledPost?.status === 'pending' ? (
+              <div className="space-y-3">
+                {/* Scheduled time card */}
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xl">⏰</span>
+                      <div>
+                        <p className="text-xs font-bold text-amber-800">Scheduled Upload</p>
+                        <p className="text-sm font-semibold text-amber-900">
+                          {new Date(scheduledPost.scheduled_at).toLocaleString('en-IN', {
+                            weekday: 'long', day: 'numeric', month: 'short',
+                            hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+                          })} IST
+                        </p>
+                      </div>
+                    </div>
+                    <button onClick={cancelSchedule} className="text-xs text-red-500 hover:text-red-700 font-medium border border-red-200 px-2.5 py-1 rounded-lg hover:bg-red-50 transition-colors">
+                      Cancel
                     </button>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <p className="text-xs text-amber-700 mb-1">Date</p>
-                    <input type="date" value={scheduleDate} onChange={e => setScheduleDate(e.target.value)}
-                      min={new Date().toISOString().split('T')[0]}
-                      className="w-full px-3 py-2 text-xs bg-white border border-amber-200 rounded-xl focus:outline-none focus:border-amber-400" />
-                  </div>
-                  <div>
-                    <p className="text-xs text-amber-700 mb-1">Time (IST)</p>
-                    <input type="time" value={scheduleTime} onChange={e => setScheduleTime(e.target.value)}
-                      className="w-full px-3 py-2 text-xs bg-white border border-amber-200 rounded-xl focus:outline-none focus:border-amber-400" />
                   </div>
                 </div>
 
-                {scheduleDate && scheduleTime && (
-                  <p className="text-xs text-amber-600 text-center">
-                    Will upload: {new Date(`${scheduleDate}T${scheduleTime}:00+05:30`).toLocaleString('en-IN', {
-                      weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
-                    })} IST
-                  </p>
+                {/* Save updated metadata */}
+                <button onClick={saveMeta} disabled={savingMeta}
+                  className={`w-full py-2.5 rounded-xl text-xs font-semibold transition-all ${metaSaved ? 'bg-emerald-500 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-50'}`}>
+                  {savingMeta ? '⏳ Saving...' : metaSaved ? '✅ Details Saved!' : '💾 Update Title & Description'}
+                </button>
+                <p className="text-xs text-gray-400 text-center">Auto-uploads at scheduled time using saved details above</p>
+              </div>
+
+            ) : scheduledPost?.status === 'posted' ? (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
+                <p className="text-lg mb-1">✅</p>
+                <p className="text-sm font-semibold text-emerald-800">Auto-published successfully!</p>
+              </div>
+
+            ) : (
+              /* No schedule yet — show Publish Now + Schedule buttons */
+              <div className="space-y-2">
+                <button onClick={publishToYoutube}
+                  className="w-full py-3 bg-red-600 hover:bg-red-700 active:bg-red-800 text-white rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2">
+                  <span>▶</span> Publish Now
+                </button>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex-1 h-px bg-gray-100" />
+                  <span className="text-xs text-gray-400 font-medium">or schedule</span>
+                  <div className="flex-1 h-px bg-gray-100" />
+                </div>
+
+                {!showScheduler ? (
+                  <button onClick={() => setShowScheduler(true)}
+                    className="w-full py-2.5 bg-white hover:bg-gray-50 border-2 border-dashed border-gray-200 hover:border-amber-300 text-gray-500 hover:text-amber-600 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2">
+                    ⏰ Schedule for Later (IST)
+                  </button>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold text-amber-900">📅 Set Schedule</p>
+                      <button onClick={() => { setShowScheduler(false); setError('') }}
+                        className="text-xs text-gray-400 hover:text-gray-600">✕ Close</button>
+                    </div>
+
+                    {/* IST quick presets */}
+                    <div>
+                      <p className="text-xs text-amber-700 mb-2 font-medium">Quick select (IST):</p>
+                      <div className="flex gap-2 flex-wrap">
+                        {IST_PRESETS.map(p => (
+                          <button key={p.time} onClick={() => setScheduleTime(p.time)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
+                              scheduleTime === p.time
+                                ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                                : 'bg-white border-amber-200 text-amber-700 hover:bg-amber-50'
+                            }`}>
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <p className="text-xs font-medium text-amber-800 mb-1">Date</p>
+                        <input type="date" value={scheduleDate}
+                          onChange={e => setScheduleDate(e.target.value)}
+                          min={new Date().toISOString().split('T')[0]}
+                          className="w-full px-3 py-2 text-sm bg-white border border-amber-200 rounded-xl focus:outline-none focus:border-amber-500 transition-colors" />
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium text-amber-800 mb-1">Time (IST)</p>
+                        <input type="time" value={scheduleTime}
+                          onChange={e => setScheduleTime(e.target.value)}
+                          className="w-full px-3 py-2 text-sm bg-white border border-amber-200 rounded-xl focus:outline-none focus:border-amber-500 transition-colors" />
+                      </div>
+                    </div>
+
+                    {/* Preview */}
+                    {scheduleDate && scheduleTime && (
+                      <div className="bg-white border border-amber-200 rounded-xl px-3 py-2.5 text-center">
+                        <p className="text-xs text-gray-500 mb-0.5">Will upload at:</p>
+                        <p className="text-sm font-bold text-gray-800">
+                          {new Date(`${scheduleDate}T${scheduleTime}:00+05:30`).toLocaleString('en-IN', {
+                            weekday: 'long', day: 'numeric', month: 'long',
+                            hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata',
+                          })} IST
+                        </p>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-amber-600 text-center">Title, description & tags above will be used at upload time</p>
+
+                    <button onClick={scheduleUpload} disabled={scheduling || !scheduleDate || !scheduleTime}
+                      className="w-full py-3 bg-amber-500 hover:bg-amber-600 active:bg-amber-700 disabled:opacity-40 text-white rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2">
+                      {scheduling ? (
+                        <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Scheduling...</>
+                      ) : '⏰ Confirm Schedule'}
+                    </button>
+                  </div>
                 )}
-
-                {error && <p className="text-xs text-red-600">{error}</p>}
-
-                <div className="flex gap-2">
-                  <button onClick={scheduleUpload} disabled={scheduling || !scheduleDate || !scheduleTime}
-                    className="flex-1 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
-                    {scheduling ? '⏳ Scheduling...' : '⏰ Confirm Schedule'}
-                  </button>
-                  <button onClick={() => { setShowScheduler(false); setError('') }}
-                    className="px-4 py-2 bg-white border border-amber-200 text-amber-600 rounded-xl text-xs">
-                    Cancel
-                  </button>
-                </div>
               </div>
             )}
           </div>
