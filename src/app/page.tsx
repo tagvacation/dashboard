@@ -43,7 +43,7 @@ const STEP_LABELS: Record<string, { label: string; emoji: string }> = {
 // ─── Root ──────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [tab, setTab] = useState<'stories' | 'generate' | 'analytics'>('stories')
+  const [tab, setTab] = useState<'stories' | 'generate' | 'analytics' | 'prompts'>('stories')
   const [stories, setStories] = useState<Story[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Story | null>(null)
@@ -93,6 +93,7 @@ export default function Dashboard() {
             { key: 'generate',  label: '✨ Generate' },
             { key: 'stories',   label: '📚 Stories'  },
             { key: 'analytics', label: '📊 Analytics' },
+            { key: 'prompts',   label: '🎯 Prompts'  },
           ].map(t => (
             <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${tab === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -130,7 +131,7 @@ export default function Dashboard() {
         {/* Generate Tab */}
         {tab === 'generate' && (
           <div className="h-full overflow-y-auto p-4 md:p-6">
-            <GenerateView onStoryReady={() => { loadStories(); setTab('stories') }} />
+            <GenerateView onStoryReady={() => { loadStories(); setTab('stories') }} stories={stories} />
           </div>
         )}
 
@@ -216,6 +217,13 @@ export default function Dashboard() {
             <AnalyticsView />
           </div>
         )}
+
+        {/* Prompts Tab */}
+        {tab === 'prompts' && (
+          <div className="h-full overflow-y-auto p-4 md:p-6">
+            <PromptsView />
+          </div>
+        )}
       </div>
 
       {/* ── Mobile Bottom Nav ── */}
@@ -224,6 +232,7 @@ export default function Dashboard() {
           { key: 'generate',  label: 'Generate',  icon: '✨' },
           { key: 'stories',   label: 'Stories',   icon: '📚' },
           { key: 'analytics', label: 'Analytics', icon: '📊' },
+          { key: 'prompts',   label: 'Prompts',   icon: '🎯' },
         ].map(t => (
           <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
             className={`flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors ${tab === t.key ? 'text-indigo-600' : 'text-gray-400'}`}>
@@ -239,11 +248,12 @@ export default function Dashboard() {
 
 // ─── Generate View ─────────────────────────────────────────────────────────────
 
-function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
+function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; stories: Story[] }) {
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [activeRun, setActiveRun] = useState<PipelineRun | null>(null)
   const [starting, setStarting] = useState(false)
   const [expandedLog, setExpandedLog] = useState(false)
+  const [expandedRun, setExpandedRun] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -252,7 +262,6 @@ function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
     const data = await res.json()
     const list: PipelineRun[] = data.runs || []
     setRuns(list)
-    // Find active run
     const active = list.find(r => !['complete', 'failed'].includes(r.status))
     if (active?.story_id !== activeRun?.story_id) {
       if (active) fetchRunDetail(active.story_id)
@@ -277,16 +286,10 @@ function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
   }
 
-  useEffect(() => {
-    loadRuns()
-    return () => stopPoll()
-  }, [])
+  useEffect(() => { loadRuns(); return () => stopPoll() }, [])
 
   useEffect(() => {
-    if (activeRun && !['complete', 'failed'].includes(activeRun.status)) {
-      startPoll(activeRun.story_id)
-    }
-    // Auto-scroll log
+    if (activeRun && !['complete', 'failed'].includes(activeRun.status)) startPoll(activeRun.story_id)
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [activeRun?.status, activeRun?.log?.length])
 
@@ -302,115 +305,146 @@ function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
 
   const isRunning = activeRun && !['complete', 'failed'].includes(activeRun.status)
   const totalOps = activeRun ? Object.keys(activeRun.operation_ids || {}).length : 0
-  const doneCLips = activeRun?.completed_clips?.length ?? 0
+  const doneClips = activeRun?.completed_clips?.length ?? 0
   const filteredCount = activeRun?.filtered_clips?.length ?? 0
-
-  const STEPS = ['init', 'topic', 'script', 'audio', 'sheet_meta', 'veo_submit', 'veo_poll', 'complete']
+  const STEPS = ['init', 'topic', 'script', 'audio', 'veo_submit', 'veo_poll', 'complete']
   const currentStepIdx = activeRun ? STEPS.indexOf(activeRun.status) : -1
 
-  return (
-    <div className="max-w-2xl mx-auto w-full space-y-4 pb-8">
+  // Stats from DB stories
+  const statsTotal = stories.length
+  const statsReady = stories.filter(s => s.status === 'clips_ready' || s.status === 'post_produced').length
+  const statsPublished = stories.filter(s => s.status === 'published').length
+  const statsThisWeek = stories.filter(s => {
+    const d = new Date(s.created_at)
+    return Date.now() - d.getTime() < 7 * 24 * 60 * 60 * 1000
+  }).length
 
-      {/* Header */}
+  return (
+    <div className="max-w-3xl mx-auto w-full space-y-5 pb-8">
+
+      {/* ── Header + CTA ── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-bold text-gray-900">✨ Generate Story</h1>
-          <p className="text-xs text-gray-400 mt-0.5">AI pipeline: topic → script → audio → 10 video clips</p>
+          <h1 className="text-lg font-bold text-gray-900">✨ Generate</h1>
+          <p className="text-xs text-gray-400 mt-0.5">AI pipeline: topic → script → audio → video clips</p>
         </div>
         <button onClick={startGeneration} disabled={starting || !!isRunning}
-          className={`px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm
-            ${starting || isRunning
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              : 'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white shadow-indigo-200'
-            }`}>
-          {starting ? '⏳ Starting...' : isRunning ? '🎬 Running...' : '+ New Story'}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all shadow-sm
+            ${starting || isRunning ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
+          {starting ? (
+            <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Starting...</>
+          ) : isRunning ? '🎬 Running...' : '+ New Story'}
         </button>
       </div>
 
-      {/* Active Run Card */}
-      {activeRun && (
-        <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${activeRun.status === 'failed' ? 'border-red-200' : activeRun.status === 'complete' ? 'border-emerald-200' : 'border-indigo-100'}`}>
+      {/* ── Quick Stats ── */}
+      <div className="grid grid-cols-4 gap-3">
+        {[
+          { label: 'Total Generated', value: statsTotal, color: 'bg-gray-50 text-gray-700', accent: 'text-gray-900' },
+          { label: 'This Week',       value: statsThisWeek, color: 'bg-indigo-50 text-indigo-700', accent: 'text-indigo-900' },
+          { label: 'Ready to Edit',  value: statsReady,   color: 'bg-emerald-50 text-emerald-700', accent: 'text-emerald-900' },
+          { label: 'Published',      value: statsPublished, color: 'bg-purple-50 text-purple-700', accent: 'text-purple-900' },
+        ].map(s => (
+          <div key={s.label} className={`${s.color} rounded-2xl p-3 text-center`}>
+            <div className={`text-2xl font-bold ${s.accent}`}>{s.value}</div>
+            <div className="text-xs opacity-70 mt-0.5 leading-tight">{s.label}</div>
+          </div>
+        ))}
+      </div>
 
-          {/* Status bar */}
-          <div className={`px-4 py-3 border-b flex items-center justify-between gap-3 ${activeRun.status === 'failed' ? 'bg-red-50 border-red-100' : activeRun.status === 'complete' ? 'bg-emerald-50 border-emerald-100' : 'bg-indigo-50 border-indigo-100'}`}>
-            <div className="flex items-center gap-2">
-              <span className="text-xl">{STEP_LABELS[activeRun.status]?.emoji || '⏳'}</span>
-              <div>
-                <p className="text-sm font-semibold text-gray-800">{STEP_LABELS[activeRun.status]?.label || activeRun.status}</p>
-                {activeRun.topic && <p className="text-xs text-gray-500 mt-0.5 line-clamp-1">{activeRun.topic}</p>}
+      {/* ── Active Run ── */}
+      {activeRun && (
+        <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden
+          ${activeRun.status === 'failed' ? 'border-red-200' : activeRun.status === 'complete' ? 'border-emerald-200' : 'border-indigo-200'}`}>
+
+          {/* Header */}
+          <div className={`px-4 py-3 border-b flex items-center justify-between gap-3
+            ${activeRun.status === 'failed' ? 'bg-red-50 border-red-100' : activeRun.status === 'complete' ? 'bg-emerald-50 border-emerald-100' : 'bg-indigo-50 border-indigo-100'}`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="text-2xl shrink-0">{STEP_LABELS[activeRun.status]?.emoji || '⏳'}</span>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-gray-900">{STEP_LABELS[activeRun.status]?.label || activeRun.status}</p>
+                {activeRun.topic && <p className="text-xs text-gray-500 truncate">{activeRun.topic}</p>}
               </div>
             </div>
-            <span className="text-xs text-gray-400 shrink-0">{activeRun.story_id.slice(-6)}</span>
+            <div className="shrink-0 text-right">
+              <p className="text-xs font-mono text-gray-400">{activeRun.story_id.slice(-8)}</p>
+              <p className="text-xs text-gray-400">{new Date(activeRun.updated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</p>
+            </div>
           </div>
 
-          {/* Step progress */}
-          <div className="px-4 pt-4 pb-2">
-            <div className="flex items-center gap-1">
-              {STEPS.filter(s => s !== 'init').map((step, i) => {
+          {/* Step pipeline */}
+          <div className="px-4 py-3">
+            <div className="flex gap-1.5">
+              {STEPS.filter(s => s !== 'init').map(step => {
                 const stepIdx = STEPS.indexOf(step)
                 const done = currentStepIdx > stepIdx || activeRun.status === 'complete'
                 const active = currentStepIdx === stepIdx
                 const info = STEP_LABELS[step]
                 return (
-                  <div key={step} className="flex-1 flex flex-col items-center gap-1">
-                    <div className={`w-full h-1.5 rounded-full transition-all ${done ? 'bg-indigo-500' : active ? 'bg-indigo-300 animate-pulse' : 'bg-gray-200'}`} />
-                    <span className="text-xs text-gray-400 hidden md:block truncate w-full text-center" style={{ fontSize: '9px' }}>
-                      {info?.label.split(' ').slice(0, 2).join(' ')}
-                    </span>
+                  <div key={step} className="flex-1 flex flex-col items-center gap-1.5" title={info?.label}>
+                    <div className={`w-full h-2 rounded-full transition-all duration-500
+                      ${done ? 'bg-indigo-500' : active ? 'bg-indigo-300 animate-pulse' : 'bg-gray-200'}`} />
+                    <span className="text-gray-400 leading-none" style={{ fontSize: '10px' }}>{info?.emoji}</span>
                   </div>
                 )
               })}
             </div>
           </div>
 
-          {/* Clip progress (when in veo_poll or complete) */}
-          {(activeRun.status === 'veo_poll' || activeRun.status === 'complete' || totalOps > 0) && (
+          {/* Clip grid */}
+          {(totalOps > 0 || activeRun.status === 'veo_poll') && (
             <div className="px-4 pb-3">
-              <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
-                <span>Video clips</span>
-                <span className="font-medium">{doneCLips}/{totalOps || '?'} done {filteredCount > 0 ? `· ${filteredCount} filtered` : ''}</span>
+              <div className="flex items-center justify-between text-xs mb-2">
+                <span className="text-gray-500 font-medium">Video Clips</span>
+                <span className="text-gray-500">
+                  <span className="text-emerald-600 font-semibold">{doneClips}</span>
+                  /{totalOps || '?'} done
+                  {filteredCount > 0 && <span className="text-red-500 ml-1">· {filteredCount} filtered</span>}
+                </span>
               </div>
-              <div className="flex gap-1 flex-wrap">
-                {totalOps > 0 ? (
-                  Array.from({ length: totalOps }, (_, i) => {
-                    const num = String(i + 1).padStart(2, '0')
-                    const isDone = activeRun.completed_clips?.includes(num)
-                    const isFiltered = activeRun.filtered_clips?.includes(num)
-                    return (
-                      <div key={num}
-                        className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-medium transition-all
-                          ${isDone ? 'bg-emerald-100 text-emerald-700' : isFiltered ? 'bg-red-100 text-red-500' : 'bg-gray-100 text-gray-400 animate-pulse'}`}>
-                        {isDone ? '✓' : isFiltered ? '✕' : num}
-                      </div>
-                    )
-                  })
-                ) : (
-                  <span className="text-xs text-gray-400 italic">Waiting for submissions...</span>
-                )}
+              <div className="flex gap-1.5 flex-wrap">
+                {totalOps > 0 ? Array.from({ length: totalOps }, (_, i) => {
+                  const num = String(i + 1).padStart(2, '0')
+                  const isDone = activeRun.completed_clips?.includes(num)
+                  const isFiltered = activeRun.filtered_clips?.includes(num)
+                  return (
+                    <div key={num} title={`Scene ${num}`}
+                      className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold transition-all
+                        ${isDone ? 'bg-emerald-100 text-emerald-700 shadow-sm' : isFiltered ? 'bg-red-100 text-red-500' : 'bg-gray-100 text-gray-300 animate-pulse'}`}>
+                      {isDone ? '✓' : isFiltered ? '✕' : num}
+                    </div>
+                  )
+                }) : <span className="text-xs text-gray-400 italic">Waiting for Veo submissions...</span>}
               </div>
             </div>
           )}
 
           {/* Error */}
           {activeRun.status === 'failed' && activeRun.error && (
-            <div className="mx-4 mb-3 px-3 py-2 bg-red-50 border border-red-200 rounded-xl">
-              <p className="text-xs text-red-700 font-medium">Error</p>
-              <p className="text-xs text-red-600 mt-0.5">{activeRun.error}</p>
+            <div className="mx-4 mb-3 px-3 py-2.5 bg-red-50 border border-red-100 rounded-xl">
+              <p className="text-xs font-semibold text-red-700 mb-0.5">Error</p>
+              <p className="text-xs text-red-600">{activeRun.error}</p>
             </div>
           )}
 
-          {/* Log */}
+          {/* Log accordion */}
           <div className="border-t border-gray-100">
             <button onClick={() => setExpandedLog(e => !e)}
-              className="w-full px-4 py-2.5 flex items-center justify-between text-xs text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors">
-              <span>🪵 Pipeline log ({activeRun.log?.length || 0} entries)</span>
-              <span>{expandedLog ? '▲' : '▼'}</span>
+              className="w-full px-4 py-2.5 flex items-center justify-between text-xs text-gray-400 hover:bg-gray-50 transition-colors">
+              <span>🪵 Pipeline Log <span className="text-gray-300">({activeRun.log?.length || 0} lines)</span></span>
+              <span className="text-gray-300">{expandedLog ? '▲' : '▼'}</span>
             </button>
             {expandedLog && (
-              <div className="px-4 pb-3 max-h-48 overflow-y-auto bg-gray-50">
-                <div className="font-mono text-xs text-gray-500 space-y-0.5">
-                  {(activeRun.log || []).slice(-30).map((line, i) => (
-                    <p key={i} className={`leading-relaxed ${line.includes('ERROR') ? 'text-red-600' : line.includes('✓') || line.includes('done') ? 'text-emerald-600' : ''}`}>
+              <div className="bg-gray-950 px-4 py-3 max-h-56 overflow-y-auto">
+                <div className="font-mono text-xs space-y-0.5">
+                  {(activeRun.log || []).slice(-40).map((line, i) => (
+                    <p key={i} className={`leading-relaxed ${
+                      line.includes('ERROR') ? 'text-red-400' :
+                      line.includes('✓') || line.includes('complete') ? 'text-emerald-400' :
+                      line.includes('Submitting') || line.includes('Polling') ? 'text-blue-400' :
+                      'text-gray-400'}`}>
+                      <span className="text-gray-600 mr-2">{line.match(/T(\d{2}:\d{2}:\d{2})/)?.[1]}</span>
                       {line.replace(/\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] /, '')}
                     </p>
                   ))}
@@ -422,48 +456,81 @@ function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
         </div>
       )}
 
-      {/* Empty state — no active run, no history */}
+      {/* ── Empty state ── */}
       {!activeRun && runs.length === 0 && (
-        <div className="text-center py-12 text-gray-400">
-          <div className="text-5xl mb-3">✨</div>
-          <p className="text-sm font-medium text-gray-600 mb-1">Ready to create</p>
-          <p className="text-xs">Hit "New Story" to generate your first KathaKar reel</p>
+        <div className="text-center py-16 text-gray-400">
+          <div className="text-6xl mb-4">✨</div>
+          <p className="text-sm font-semibold text-gray-600 mb-1">Ready to create</p>
+          <p className="text-xs">Click "New Story" to start the AI pipeline</p>
         </div>
       )}
 
-      {/* Recent runs */}
+      {/* ── Run History ── */}
       {runs.length > 0 && (
         <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Recent Generations</h3>
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Generation History</h3>
+            <span className="text-xs text-gray-300">{runs.length} runs</span>
           </div>
           <div className="divide-y divide-gray-50">
             {runs.map(run => {
-              const isActive = !['complete', 'failed'].includes(run.status)
-              const stepInfo = STEP_LABELS[run.status]
+              const info = STEP_LABELS[run.status]
+              const isSelected = expandedRun === run.story_id
+              const ops = Object.keys(typeof run.operation_ids === 'object' ? run.operation_ids : {}).length
+              const done = Array.isArray(run.completed_clips) ? run.completed_clips.length : 0
               return (
-                <button key={run.story_id} onClick={() => fetchRunDetail(run.story_id)}
-                  className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors ${activeRun?.story_id === run.story_id ? 'bg-indigo-50' : ''}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-gray-700 truncate">{run.topic || run.story_id}</p>
-                      <p className="text-xs text-gray-400 mt-0.5">
-                        {run.story_id.slice(-6)} · {new Date(run.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
-                      </p>
+                <div key={run.story_id}>
+                  <button onClick={() => {
+                    setExpandedRun(isSelected ? null : run.story_id)
+                    if (!isSelected && !activeRun) fetchRunDetail(run.story_id)
+                  }}
+                    className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg shrink-0">{info?.emoji || '⏳'}</span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-gray-800 font-medium truncate">{run.topic || run.story_id}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-gray-400">{new Date(run.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' })}</span>
+                          {ops > 0 && <span className="text-xs text-gray-300">· {done}/{ops} clips</span>}
+                        </div>
+                      </div>
+                      <div className="shrink-0">
+                        {run.status === 'complete' ? (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">✅ Done</span>
+                        ) : run.status === 'failed' ? (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-red-50 text-red-700 font-medium">❌ Failed</span>
+                        ) : (
+                          <span className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 font-medium animate-pulse">{info?.label}</span>
+                        )}
+                      </div>
+                      <span className="text-gray-300 text-xs">{isSelected ? '▲' : '▼'}</span>
                     </div>
-                    <div className="shrink-0 flex items-center gap-2">
-                      {run.status === 'complete' ? (
-                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-50 text-emerald-700">✅ Done</span>
-                      ) : run.status === 'failed' ? (
-                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-red-50 text-red-700">❌ Failed</span>
-                      ) : (
-                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-50 text-indigo-700 animate-pulse">
-                          {stepInfo?.emoji} {stepInfo?.label}
-                        </span>
+                  </button>
+                  {isSelected && activeRun?.story_id === run.story_id && (
+                    <div className="px-4 pb-3 bg-gray-50 border-t border-gray-100">
+                      {/* Compact clip grid for history */}
+                      {ops > 0 && (
+                        <div className="flex gap-1 flex-wrap pt-3">
+                          {Array.from({ length: ops }, (_, i) => {
+                            const num = String(i + 1).padStart(2, '0')
+                            const isDone = activeRun.completed_clips?.includes(num)
+                            const isFiltered = activeRun.filtered_clips?.includes(num)
+                            return (
+                              <div key={num}
+                                className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold
+                                  ${isDone ? 'bg-emerald-100 text-emerald-700' : isFiltered ? 'bg-red-100 text-red-400' : 'bg-gray-200 text-gray-400'}`}>
+                                {isDone ? '✓' : isFiltered ? '✕' : num}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                      {activeRun.error && (
+                        <p className="text-xs text-red-600 mt-2 bg-red-50 px-2 py-1 rounded-lg">{activeRun.error}</p>
                       )}
                     </div>
-                  </div>
-                </button>
+                  )}
+                </div>
               )
             })}
           </div>
@@ -950,6 +1017,132 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Prompts View ──────────────────────────────────────────────────────────────
+
+const PROMPT_META = [
+  {
+    key: 'topic_picker',
+    label: '🎯 Topic Picker',
+    desc: 'AI Agent 1 — picks today\'s story topic. Change niche, theme distribution, or topic rules here.',
+  },
+  {
+    key: 'script_writer',
+    label: '✍️ Script Writer',
+    desc: 'AI Agent 2 — writes the full script with scenes, character anchors, Veo prompts, Hindi TTS. Most important prompt.',
+  },
+  {
+    key: 'scene_rewrite',
+    label: '🔄 Scene Rewrite',
+    desc: 'Used when Veo rejects a scene. Rewrites the video prompt to pass content filters while keeping story continuity.',
+  },
+] as const
+
+function PromptsView() {
+  const [prompts, setPrompts] = useState<Record<string, string>>({})
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [resetting, setResetting] = useState(false)
+  const [expandedKey, setExpandedKey] = useState<string | null>('topic_picker')
+
+  useEffect(() => {
+    fetch('/api/prompts').then(r => r.json()).then(d => {
+      setPrompts(d)
+      setLoading(false)
+    })
+  }, [])
+
+  const savePrompts = async () => {
+    setSaving(true); setSaved(false)
+    await fetch('/api/prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prompts) })
+    setSaving(false); setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+  }
+
+  const resetToDefaults = async () => {
+    if (!confirm('Reset all prompts to built-in defaults?')) return
+    setResetting(true)
+    await fetch('/api/prompts', { method: 'DELETE' })
+    const res = await fetch('/api/prompts')
+    setPrompts(await res.json())
+    setResetting(false)
+  }
+
+  if (loading) return <div className="text-center py-12 text-gray-400 animate-pulse">Loading prompts...</div>
+
+  return (
+    <div className="max-w-3xl mx-auto w-full pb-8 space-y-4">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-bold text-gray-900">🎯 AI Prompts</h1>
+          <p className="text-xs text-gray-400 mt-0.5">Edit prompts to change content style, niche, or language. Stored in PostgreSQL.</p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={resetToDefaults} disabled={resetting}
+            className="px-3 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-xl transition-colors disabled:opacity-50">
+            {resetting ? 'Resetting...' : '↺ Reset defaults'}
+          </button>
+          <button onClick={savePrompts} disabled={saving}
+            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50'}`}>
+            {saving ? 'Saving...' : saved ? '✓ Saved!' : 'Save Changes'}
+          </button>
+        </div>
+      </div>
+
+      {/* Usage hint */}
+      <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700">
+        <span className="font-semibold">Tip:</span> To create a different type of content (e.g. motivational quotes, devotional stories, comedy), just change the Topic Picker and Script Writer prompts. No code changes needed.
+      </div>
+
+      {/* Prompt editors */}
+      {PROMPT_META.map(({ key, label, desc }) => (
+        <div key={key} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <button onClick={() => setExpandedKey(expandedKey === key ? null : key)}
+            className="w-full px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50 transition-colors">
+            <div className="text-left">
+              <p className="text-sm font-semibold text-gray-800">{label}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{desc}</p>
+            </div>
+            <div className="shrink-0 flex items-center gap-3">
+              <span className="text-xs text-gray-300">{(prompts[key] || '').length.toLocaleString()} chars</span>
+              <span className="text-gray-300">{expandedKey === key ? '▲' : '▼'}</span>
+            </div>
+          </button>
+
+          {expandedKey === key && (
+            <div className="border-t border-gray-100">
+              <textarea
+                value={prompts[key] || ''}
+                onChange={e => setPrompts(p => ({ ...p, [key]: e.target.value }))}
+                rows={20}
+                spellCheck={false}
+                className="w-full px-4 py-3 text-xs font-mono bg-gray-950 text-gray-200 focus:outline-none resize-y leading-relaxed"
+                placeholder="Loading..."
+              />
+              <div className="px-4 py-2 bg-gray-900 flex items-center justify-between">
+                <span className="text-xs text-gray-500 font-mono">{(prompts[key] || '').length} chars · {(prompts[key] || '').split('\n').length} lines</span>
+                <button onClick={() => setPrompts(p => ({ ...p, [key]: '' }))}
+                  className="text-xs text-gray-600 hover:text-red-400 transition-colors">
+                  Clear
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {/* Save reminder */}
+      <div className="flex justify-end">
+        <button onClick={savePrompts} disabled={saving}
+          className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50'}`}>
+          {saving ? 'Saving...' : saved ? '✓ All changes saved!' : '💾 Save All Changes'}
+        </button>
+      </div>
     </div>
   )
 }
