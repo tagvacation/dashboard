@@ -38,7 +38,7 @@ export async function getAllStories(): Promise<Story[]> {
   return rows.slice(1).map(row => {
     const obj: Record<string, string> = {}
     headers.forEach((h, i) => { obj[h] = row[i] || '' })
-    return obj as Story
+    return obj as unknown as Story
   }).filter(s => s.story_id).reverse() // newest first
 }
 

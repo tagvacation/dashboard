@@ -36,7 +36,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
           '-vf scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2', // 9:16 1080p
         ])
         .output(tmpOut)
-        .on('end', resolve)
+        .on('end', () => resolve())
         .on('error', reject)
         .run()
     })

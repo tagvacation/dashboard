@@ -1,4 +1,5 @@
 import { Storage } from '@google-cloud/storage'
+import { Readable } from 'stream'
 
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
 const storage = new Storage({ credentials })
@@ -22,8 +23,8 @@ export async function deleteStory(storyId: string) {
   await Promise.all(files.map(f => f.delete()))
 }
 
-export async function getFileStream(filePath: string) {
-  return bucket.file(filePath).createReadStream()
+export function getFileStream(filePath: string): Readable {
+  return bucket.file(filePath).createReadStream() as unknown as Readable
 }
 
 export async function fileExists(filePath: string) {

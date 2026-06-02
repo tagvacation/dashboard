@@ -20,8 +20,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     for (const file of relevantFiles) {
       const fileName = file.name.split('/').pop()!
-      const stream = await getFileStream(file.name)
-      archive.append(stream as NodeJS.ReadableStream, { name: fileName })
+      const stream = getFileStream(file.name)
+      archive.append(stream, { name: fileName })
     }
 
     archive.finalize()
