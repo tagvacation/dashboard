@@ -4,7 +4,10 @@ const PUBLIC_PATHS = ['/login', '/api/auth/login']
 
 // Routes that bypass middleware body buffering (large uploads)
 // Auth is handled inside the route handler itself
-const BYPASS_PATHS = [/^\/api\/stories\/[^/]+\/upload-final$/]
+const BYPASS_PATHS = [
+  /^\/api\/stories\/[^/]+\/upload-final$/,
+  /^\/api\/stories\/[^/]+\/publish-youtube$/,
+]
 
 function getExpectedToken() {
   const raw = `${process.env.DASHBOARD_PASSWORD}:${process.env.JWT_SECRET}`

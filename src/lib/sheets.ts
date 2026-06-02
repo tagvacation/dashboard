@@ -18,8 +18,7 @@ export interface Story {
   clips_generated_at: string
   storage_path: string
   audio_url: string
-  final_url: string
-  published_to: string
+  youtube_link: string   // YouTube Short URL after upload
   notes: string
   merged_at: string
 }

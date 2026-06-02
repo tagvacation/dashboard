@@ -8,7 +8,7 @@ interface Clip { name: string; url: string; size: number }
 interface Story {
   story_id: string; topic: string; theme: string; status: string
   created_at: string; clips_generated_at: string; scenes_count: string
-  audio_url: string; notes: string; final_url: string; published_to: string
+  audio_url: string; notes: string; youtube_link: string
   clips: Clip[]; hasAudio: boolean; hasFinal: boolean
 }
 interface PipelineRun {
@@ -478,27 +478,15 @@ function GenerateView({ onStoryReady }: { onStoryReady: () => void }) {
 function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: () => void; onUpdate: (s: Story) => void }) {
   const [clips, setClips] = useState(story.clips)
   const [activeClip, setActiveClip] = useState<string | null>(story.clips[0]?.url || null)
-  const [finalUrl, setFinalUrl] = useState(story.final_url || '')
-  const [uploading, setUploading] = useState(false)
-  const [uploadProgress, setUploadProgress] = useState(0)
-  const [uploadError, setUploadError] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deletingClip, setDeletingClip] = useState('')
-  const [distLinks, setDistLinks] = useState<Record<string, string>>({})
-  const [saving, setSaving] = useState('')
-  const [saveError, setSaveError] = useState('')
 
-  // Fetch fresh data from server (after mutations)
   const refreshStory = async () => {
     const res = await fetch(`/api/stories/${story.story_id}`)
     if (res.ok) {
       const data = await res.json()
-      if (data.story) {
-        setClips(data.story.clips || [])
-        setFinalUrl(data.story.final_url || '')
-        onUpdate(data.story)
-      }
+      if (data.story) { setClips(data.story.clips || []); onUpdate(data.story) }
     }
   }
 
@@ -521,54 +509,6 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
     }
   }
 
-  const uploadFinal = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return
-    e.target.value = '' // reset so same file can be re-selected
-
-    // ── Validation ──────────────────────────────────────────────
-    if (!file.type.includes('video') && !file.name.endsWith('.mp4')) {
-      setUploadError('Only MP4 video files are supported'); return
-    }
-    const sizeMB = file.size / (1024 * 1024)
-    if (sizeMB > 1024) { // 1GB hard limit
-      setUploadError(`File too large: ${sizeMB.toFixed(0)}MB. Max 1GB.`); return
-    }
-
-    setUploading(true); setUploadError(''); setUploadProgress(0)
-
-    // ── Use XHR for upload progress ──────────────────────────────
-    const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/stories/${story.story_id}/upload-final`)
-    xhr.setRequestHeader('Content-Type', 'video/mp4')
-    xhr.setRequestHeader('X-Filename', file.name)
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
-    }
-
-    xhr.onload = () => {
-      try {
-        const data = JSON.parse(xhr.responseText)
-        if (xhr.status >= 200 && xhr.status < 300 && data.finalUrl) {
-          setFinalUrl(data.finalUrl)
-          setUploadProgress(100)
-          onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true, status: story.status === 'clips_ready' ? 'post_produced' : story.status })
-        } else {
-          setUploadError(data.error || `Upload failed (HTTP ${xhr.status})`)
-        }
-      } catch {
-        setUploadError('Invalid response from server')
-      }
-      setUploading(false)
-    }
-
-    xhr.onerror = () => { setUploadError('Network error — check connection and retry'); setUploading(false) }
-    xhr.ontimeout = () => { setUploadError('Upload timed out — try again'); setUploading(false) }
-    xhr.timeout = 10 * 60 * 1000 // 10 min timeout
-
-    xhr.send(file)
-  }
-
   const deleteClip = async (clipName: string, clipUrl: string) => {
     if (!confirm('Delete this clip from GCS?')) return
     setDeletingClip(clipName)
@@ -585,22 +525,6 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
       if (activeClip === clipUrl) setActiveClip(remaining[0]?.url || null)
     }
     setDeletingClip('')
-  }
-
-  const markPublished = async (platform: string) => {
-    setSaving(platform); setSaveError('')
-    const res = await fetch(`/api/stories/${story.story_id}/distribution`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform, url: distLinks[platform] || '', status: 'published' }),
-    })
-    if (res.ok) {
-      const data = await res.json()
-      const newPubTo = JSON.stringify(data.distribution || {})
-      onUpdate({ ...story, status: 'published', published_to: newPubTo })
-    } else {
-      const d = await res.json(); setSaveError(d.error || 'Failed to save')
-    }
-    setSaving('')
   }
 
   return (
@@ -637,80 +561,10 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
         </div>
       </div>
 
-      {/* Final Reel upload */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">🎬 Final Reel</h3>
-
-        {/* Pre-upload checks */}
-        {!finalUrl && !uploading && (
-          <div className="mb-3 space-y-1.5">
-            <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${clips.length > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
-              <span>{clips.length > 0 ? '✅' : '⚠️'}</span>
-              <span>{clips.length > 0 ? `${clips.length} raw clips ready` : 'No clips yet — generate video first'}</span>
-            </div>
-            <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${story.hasAudio ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-500'}`}>
-              <span>{story.hasAudio ? '✅' : 'ℹ️'}</span>
-              <span>{story.hasAudio ? 'Narration audio ready' : 'No narration audio'}</span>
-            </div>
-            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-gray-50 text-gray-500">
-              <span>ℹ️</span>
-              <span>Edit clips + audio in CapCut / DaVinci, then upload the final MP4 here</span>
-            </div>
-          </div>
-        )}
-
-        {finalUrl ? (
-          <div>
-            <video controls className="w-full bg-gray-900 rounded-xl mb-3" style={{ maxHeight: '300px' }} src={finalUrl} />
-            <div className="flex items-center gap-4">
-              <a href={finalUrl} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">↗ Open</a>
-              <a href={finalUrl} download className="text-xs text-indigo-500 hover:underline">⬇ Download MP4</a>
-              <label className="text-xs text-gray-400 cursor-pointer hover:text-indigo-500 transition-colors ml-auto">
-                🔄 Replace reel
-                <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} />
-              </label>
-            </div>
-          </div>
-        ) : uploading ? (
-          /* Upload in progress */
-          <div className="py-6 px-4 border-2 border-indigo-200 rounded-xl bg-indigo-50">
-            <div className="flex items-center gap-3 mb-3">
-              <svg className="animate-spin w-5 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-              </svg>
-              <span className="text-sm font-medium text-indigo-700">Uploading to GCS... {uploadProgress}%</span>
-            </div>
-            <div className="w-full bg-indigo-100 rounded-full h-2">
-              <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
-            </div>
-            <p className="text-xs text-indigo-400 mt-2">Do not close this tab</p>
-          </div>
-        ) : (
-          /* Drop zone */
-          <label className="flex flex-col items-center py-8 border-2 border-dashed border-gray-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-colors">
-            <span className="text-3xl mb-2">📤</span>
-            <span className="text-sm font-medium text-gray-700">Upload Final Reel</span>
-            <span className="text-xs text-gray-400 mt-1">MP4 only · Max 1GB</span>
-            <input type="file" accept="video/mp4,video/*" className="hidden" onChange={uploadFinal} />
-          </label>
-        )}
-
-        {uploadError && (
-          <div className="mt-3 px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
-            <span className="text-red-500 shrink-0">❌</span>
-            <div>
-              <p className="text-xs font-semibold text-red-700">Upload failed</p>
-              <p className="text-xs text-red-600 mt-0.5">{uploadError}</p>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* YouTube */}
+      {/* YouTube Upload — simplified: file → YouTube → store URL */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">▶ YouTube Shorts</h3>
-        <YouTubePublish story={story} finalUrl={finalUrl} onUpdate={onUpdate} />
+        <YoutubeUpload story={story} clips={clips} hasAudio={story.hasAudio} onUpdate={onUpdate} />
       </div>
 
       {/* Audio */}
@@ -722,7 +576,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
         </div>
       )}
 
-      {/* Clips grid */}
+      {/* Clips */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">📹 Raw Clips ({clips.length})</h3>
         {clips.length === 0 ? (
@@ -735,9 +589,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
                 const isActive = activeClip === clip.url
                 return (
                   <div key={clip.name} className={`flex items-center shrink-0 rounded-xl overflow-hidden transition-colors ${isActive ? 'bg-indigo-500' : 'bg-gray-100'}`}>
-                    <button onClick={() => setActiveClip(clip.url)} className={`px-3 py-2 text-xs font-medium ${isActive ? 'text-white' : 'text-gray-600'}`}>
-                      S{num}
-                    </button>
+                    <button onClick={() => setActiveClip(clip.url)} className={`px-3 py-2 text-xs font-medium ${isActive ? 'text-white' : 'text-gray-600'}`}>S{num}</button>
                     <button onClick={() => deleteClip(clip.name, clip.url)} disabled={!!deletingClip}
                       className={`pr-2 text-xs transition-colors ${isActive ? 'text-indigo-200' : 'text-gray-400'} hover:text-red-500`}>
                       {deletingClip === clip.name ? '·' : '✕'}
@@ -755,141 +607,102 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
           </>
         )}
       </div>
-
-      {/* Other platforms */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">🌐 Other Platforms</h3>
-        {[
-          { key: 'instagram', label: 'Instagram', color: 'bg-gradient-to-r from-pink-500 to-orange-400' },
-          { key: 'tiktok',    label: 'TikTok',    color: 'bg-gray-900' },
-        ].map(p => {
-          // Check if already marked published
-          const pubData = (() => { try { return JSON.parse(story.published_to || '{}') } catch { return {} } })()
-          const platformData = pubData[p.key]
-          const isPublished = platformData?.status === 'published'
-          return (
-            <div key={p.key} className="mb-2">
-              <div className="flex items-center gap-2">
-                <span className={`text-xs px-2.5 py-1.5 rounded-lg ${p.color} text-white w-20 text-center font-medium shrink-0`}>{p.label}</span>
-                {isPublished ? (
-                  <div className="flex-1 flex items-center gap-2">
-                    <a href={platformData.url} target="_blank" rel="noreferrer"
-                      className="flex-1 min-w-0 px-3 py-2 text-xs bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 truncate hover:underline">
-                      {platformData.url || 'Published'}
-                    </a>
-                    <span className="text-xs text-emerald-600 font-medium shrink-0">✓</span>
-                  </div>
-                ) : (
-                  <>
-                    <input type="url" placeholder="Paste URL after posting" value={distLinks[p.key] || ''}
-                      onChange={e => setDistLinks(prev => ({ ...prev, [p.key]: e.target.value }))}
-                      className="flex-1 min-w-0 px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 transition-colors" />
-                    <button onClick={() => markPublished(p.key)} disabled={saving === p.key}
-                      className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-medium shrink-0">
-                      {saving === p.key ? '...' : '✓ Mark'}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-          )
-        })}
-        {saveError && <p className="text-xs text-red-600 mt-2">{saveError}</p>}
-      </div>
     </div>
   )
 }
 
-// ─── YouTube Publish ───────────────────────────────────────────────────────────
+// ─── YouTube Upload (simplified) ──────────────────────────────────────────────
 
-function YouTubePublish({ story, finalUrl, onUpdate }: {
-  story: Story
-  finalUrl: string
-  onUpdate: (s: Story) => void
+function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
+  story: Story; clips: Clip[]; hasAudio: boolean; onUpdate: (s: Story) => void
 }) {
-  // Parse existing YouTube URL from published_to field
-  const existingYtUrl = (() => {
-    try { return JSON.parse(story.published_to || '{}').youtube || '' }
-    catch { return '' }
-  })()
-
+  const ytLink = story.youtube_link || ''
   const [title, setTitle] = useState(story.topic.slice(0, 90))
   const [description, setDescription] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
   const [tags, setTags] = useState('shorts,hindi story,moral story,kathakar')
   const [uploading, setUploading] = useState(false)
-  const [publishedUrl, setPublishedUrl] = useState(existingYtUrl)
+  const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
 
-  // Already published — show read-only card, no publish button
-  if (publishedUrl) return (
-    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-      <div className="flex items-center gap-2 mb-2">
-        <span className="text-lg">✅</span>
-        <p className="text-sm font-semibold text-emerald-800">Published on YouTube</p>
+  // Already uploaded — just show the link
+  if (ytLink) return (
+    <div className="space-y-3">
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-3">
+        <span className="text-xl">✅</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold text-emerald-800 mb-0.5">Uploaded to YouTube</p>
+          <a href={ytLink} target="_blank" rel="noreferrer"
+            className="text-xs text-emerald-700 hover:underline break-all">{ytLink}</a>
+        </div>
       </div>
-      <a href={publishedUrl} target="_blank" rel="noreferrer"
-        className="text-xs text-emerald-700 hover:text-emerald-900 hover:underline break-all block mb-3">
-        {publishedUrl}
+      <a href={ytLink} target="_blank" rel="noreferrer"
+        className="block w-full text-center py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-semibold transition-colors">
+        ▶ Open YouTube Short
       </a>
-      <button
-        onClick={() => window.open(publishedUrl, '_blank')}
-        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-colors">
-        ▶ Open on YouTube
-      </button>
     </div>
   )
 
-  const publish = async () => {
-    if (!finalUrl) { setError('Upload final reel first, then publish'); return }
-    setUploading(true); setError('')
+  // Pre-upload checklist
+  const missingClips = clips.length === 0
+  const missingAudio = !hasAudio
 
-    try {
-      const res = await fetch(`/api/stories/${story.story_id}/publish`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          platform: 'youtube',
-          videoUrl: finalUrl,
-          title,
-          description,
-          tags: tags.split(',').map(t => t.trim()).filter(Boolean),
-        }),
-      })
+  const upload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    e.target.value = ''
 
-      const data = await res.json()
-
-      if (!res.ok || !data.youtubeUrl) {
-        // Show detailed error from YouTube API
-        const errMsg = data.error || `Upload failed (HTTP ${res.status})`
-        setError(errMsg)
-        setUploading(false)
-        return
-      }
-
-      // Success — update local state + parent story
-      setPublishedUrl(data.youtubeUrl)
-      const newPublishedTo = JSON.stringify({
-        ...(() => { try { return JSON.parse(story.published_to || '{}') } catch { return {} } })(),
-        youtube: data.youtubeUrl,
-      })
-      onUpdate({ ...story, status: 'published', published_to: newPublishedTo })
-
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Network error — check connection and retry')
+    if (!file.type.includes('video') && !file.name.endsWith('.mp4')) {
+      setError('Only MP4 files supported'); return
     }
+    const sizeMB = file.size / (1024 * 1024)
+    if (sizeMB > 1024) { setError(`File too large: ${sizeMB.toFixed(0)}MB (max 1GB)`); return }
 
-    setUploading(false)
+    setUploading(true); setError(''); setProgress(0)
+
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/stories/${story.story_id}/publish-youtube`)
+    xhr.setRequestHeader('Content-Type', 'video/mp4')
+    xhr.setRequestHeader('X-Title', encodeURIComponent(title))
+    xhr.setRequestHeader('X-Description', encodeURIComponent(description))
+    xhr.setRequestHeader('X-Tags', encodeURIComponent(tags))
+
+    xhr.upload.onprogress = ev => { if (ev.lengthComputable) setProgress(Math.round(ev.loaded / ev.total * 100)) }
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText)
+        if (xhr.status < 300 && data.youtubeUrl) {
+          onUpdate({ ...story, youtube_link: data.youtubeUrl, status: 'published' })
+        } else {
+          setError(data.error || `Upload failed (HTTP ${xhr.status})`)
+        }
+      } catch { setError('Invalid server response') }
+      setUploading(false)
+    }
+    xhr.onerror = () => { setError('Network error — check connection'); setUploading(false) }
+    xhr.timeout = 15 * 60 * 1000 // 15 min
+    xhr.ontimeout = () => { setError('Timed out — YouTube upload can be slow, try again'); setUploading(false) }
+    xhr.send(file)
   }
 
   return (
     <div className="space-y-3">
-      {!finalUrl && (
-        <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
-          <span className="text-base">⚠️</span>
-          <p className="text-xs text-amber-700 font-medium">Upload final reel above before publishing</p>
+      {/* Checklist */}
+      <div className="space-y-1.5">
+        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${!missingClips ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+          <span>{!missingClips ? '✅' : '⚠️'}</span>
+          <span>{!missingClips ? `${clips.length} raw clips ready in GCS` : 'No clips yet — generate video first'}</span>
         </div>
-      )}
+        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${!missingAudio ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-400'}`}>
+          <span>{!missingAudio ? '✅' : 'ℹ️'}</span>
+          <span>{!missingAudio ? 'Hindi narration audio ready' : 'No narration audio yet'}</span>
+        </div>
+        <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-blue-50 text-blue-600">
+          <span>ℹ️</span>
+          <span>Edit in CapCut/DaVinci → Export MP4 → Upload below → Goes directly to YouTube</span>
+        </div>
+      </div>
 
+      {/* Title / Desc / Tags */}
       <div>
         <div className="flex justify-between mb-1">
           <label className="text-xs text-gray-500 font-medium">Title</label>
@@ -898,45 +711,47 @@ function YouTubePublish({ story, finalUrl, onUpdate }: {
         <input value={title} onChange={e => setTitle(e.target.value)} maxLength={100}
           className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors" />
       </div>
-
       <div>
         <label className="text-xs text-gray-500 font-medium block mb-1">Description</label>
-        <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
-          className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors resize-none" />
+        <textarea value={description} onChange={e => setDescription(e.target.value)} rows={2}
+          className="w-full px-3 py-1.5 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors resize-none" />
       </div>
-
       <div>
-        <label className="text-xs text-gray-500 font-medium block mb-1">Tags (comma separated)</label>
+        <label className="text-xs text-gray-500 font-medium block mb-1">Tags</label>
         <input value={tags} onChange={e => setTags(e.target.value)}
           className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors" />
       </div>
 
-      {/* Error — detailed, not generic */}
+      {/* Error */}
       {error && (
-        <div className="px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl">
-          <p className="text-xs font-semibold text-red-700 mb-0.5">Upload failed</p>
-          <p className="text-xs text-red-600 break-words">{error}</p>
+        <div className="px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex gap-2">
+          <span className="shrink-0">❌</span><span>{error}</span>
         </div>
       )}
 
-      <button onClick={publish} disabled={uploading || !finalUrl}
-        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all
-          ${uploading
-            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
-            : !finalUrl
-              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-              : 'bg-red-600 hover:bg-red-700 active:bg-red-800 text-white shadow-sm'
-          }`}>
-        {uploading ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+      {/* Upload button / progress */}
+      {uploading ? (
+        <div className="py-4 px-3 bg-red-50 border border-red-200 rounded-xl">
+          <div className="flex items-center gap-2 mb-2">
+            <svg className="animate-spin w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
-            Uploading to YouTube...
-          </span>
-        ) : '▶ Publish to YouTube Shorts'}
-      </button>
+            <span className="text-xs font-medium text-red-700">
+              {progress < 100 ? `Uploading... ${progress}%` : 'Processing on YouTube...'}
+            </span>
+          </div>
+          <div className="w-full bg-red-100 rounded-full h-1.5">
+            <div className="bg-red-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
+          </div>
+          <p className="text-xs text-red-400 mt-1.5">Do not close this tab</p>
+        </div>
+      ) : (
+        <label className="block w-full text-center py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold cursor-pointer transition-colors">
+          ▶ Select MP4 & Upload to YouTube Shorts
+          <input type="file" accept="video/mp4,video/*" className="hidden" onChange={upload} />
+        </label>
+      )}
     </div>
   )
 }
