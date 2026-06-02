@@ -480,6 +480,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   const [activeClip, setActiveClip] = useState<string | null>(story.clips[0]?.url || null)
   const [finalUrl, setFinalUrl] = useState(story.final_url || '')
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
   const [uploadError, setUploadError] = useState('')
   const [downloading, setDownloading] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -520,22 +521,52 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
     }
   }
 
-  const uploadFinal = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const uploadFinal = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
-    setUploading(true); setUploadError('')
-    const res = await fetch(`/api/stories/${story.story_id}/upload-final`, {
-      method: 'POST',
-      body: file,
-      headers: { 'Content-Type': 'video/mp4', 'X-Filename': file.name },
-    })
-    const data = await res.json()
-    if (res.ok && data.finalUrl) {
-      setFinalUrl(data.finalUrl)
-      onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true, status: story.status === 'clips_ready' ? 'post_produced' : story.status })
-    } else {
-      setUploadError(data.error || `Upload failed (${res.status})`)
+    e.target.value = '' // reset so same file can be re-selected
+
+    // ── Validation ──────────────────────────────────────────────
+    if (!file.type.includes('video') && !file.name.endsWith('.mp4')) {
+      setUploadError('Only MP4 video files are supported'); return
     }
-    setUploading(false)
+    const sizeMB = file.size / (1024 * 1024)
+    if (sizeMB > 1024) { // 1GB hard limit
+      setUploadError(`File too large: ${sizeMB.toFixed(0)}MB. Max 1GB.`); return
+    }
+
+    setUploading(true); setUploadError(''); setUploadProgress(0)
+
+    // ── Use XHR for upload progress ──────────────────────────────
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/stories/${story.story_id}/upload-final`)
+    xhr.setRequestHeader('Content-Type', 'video/mp4')
+    xhr.setRequestHeader('X-Filename', file.name)
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) setUploadProgress(Math.round((e.loaded / e.total) * 100))
+    }
+
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText)
+        if (xhr.status >= 200 && xhr.status < 300 && data.finalUrl) {
+          setFinalUrl(data.finalUrl)
+          setUploadProgress(100)
+          onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true, status: story.status === 'clips_ready' ? 'post_produced' : story.status })
+        } else {
+          setUploadError(data.error || `Upload failed (HTTP ${xhr.status})`)
+        }
+      } catch {
+        setUploadError('Invalid response from server')
+      }
+      setUploading(false)
+    }
+
+    xhr.onerror = () => { setUploadError('Network error — check connection and retry'); setUploading(false) }
+    xhr.ontimeout = () => { setUploadError('Upload timed out — try again'); setUploading(false) }
+    xhr.timeout = 10 * 60 * 1000 // 10 min timeout
+
+    xhr.send(file)
   }
 
   const deleteClip = async (clipName: string, clipUrl: string) => {
@@ -609,40 +640,70 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
       {/* Final Reel upload */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">🎬 Final Reel</h3>
+
+        {/* Pre-upload checks */}
+        {!finalUrl && !uploading && (
+          <div className="mb-3 space-y-1.5">
+            <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${clips.length > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+              <span>{clips.length > 0 ? '✅' : '⚠️'}</span>
+              <span>{clips.length > 0 ? `${clips.length} raw clips ready` : 'No clips yet — generate video first'}</span>
+            </div>
+            <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${story.hasAudio ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-500'}`}>
+              <span>{story.hasAudio ? '✅' : 'ℹ️'}</span>
+              <span>{story.hasAudio ? 'Narration audio ready' : 'No narration audio'}</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-gray-50 text-gray-500">
+              <span>ℹ️</span>
+              <span>Edit clips + audio in CapCut / DaVinci, then upload the final MP4 here</span>
+            </div>
+          </div>
+        )}
+
         {finalUrl ? (
           <div>
             <video controls className="w-full bg-gray-900 rounded-xl mb-3" style={{ maxHeight: '300px' }} src={finalUrl} />
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-4">
+              <a href={finalUrl} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">↗ Open</a>
               <a href={finalUrl} download className="text-xs text-indigo-500 hover:underline">⬇ Download MP4</a>
-              <label className="text-xs text-gray-400 cursor-pointer hover:text-indigo-500 transition-colors">
-                🔄 Replace
+              <label className="text-xs text-gray-400 cursor-pointer hover:text-indigo-500 transition-colors ml-auto">
+                🔄 Replace reel
                 <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} />
               </label>
             </div>
           </div>
+        ) : uploading ? (
+          /* Upload in progress */
+          <div className="py-6 px-4 border-2 border-indigo-200 rounded-xl bg-indigo-50">
+            <div className="flex items-center gap-3 mb-3">
+              <svg className="animate-spin w-5 h-5 text-indigo-500 shrink-0" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              <span className="text-sm font-medium text-indigo-700">Uploading to GCS... {uploadProgress}%</span>
+            </div>
+            <div className="w-full bg-indigo-100 rounded-full h-2">
+              <div className="bg-indigo-500 h-2 rounded-full transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
+            </div>
+            <p className="text-xs text-indigo-400 mt-2">Do not close this tab</p>
+          </div>
         ) : (
-          <label className={`flex flex-col items-center py-10 border-2 border-dashed rounded-xl cursor-pointer transition-colors
-            ${uploading ? 'opacity-50 pointer-events-none border-gray-200' : 'border-gray-200 hover:border-indigo-400'}`}>
-            {uploading ? (
-              <>
-                <svg className="animate-spin w-8 h-8 text-indigo-400 mb-2" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-                </svg>
-                <span className="text-sm font-medium text-indigo-500">Uploading...</span>
-              </>
-            ) : (
-              <>
-                <span className="text-3xl mb-2">📤</span>
-                <span className="text-sm font-medium text-gray-600">Upload Final Reel</span>
-                <span className="text-xs text-gray-400 mt-1">MP4 from CapCut / DaVinci / any editor</span>
-              </>
-            )}
-            <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} disabled={uploading} />
+          /* Drop zone */
+          <label className="flex flex-col items-center py-8 border-2 border-dashed border-gray-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-colors">
+            <span className="text-3xl mb-2">📤</span>
+            <span className="text-sm font-medium text-gray-700">Upload Final Reel</span>
+            <span className="text-xs text-gray-400 mt-1">MP4 only · Max 1GB</span>
+            <input type="file" accept="video/mp4,video/*" className="hidden" onChange={uploadFinal} />
           </label>
         )}
+
         {uploadError && (
-          <div className="mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">{uploadError}</div>
+          <div className="mt-3 px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
+            <span className="text-red-500 shrink-0">❌</span>
+            <div>
+              <p className="text-xs font-semibold text-red-700">Upload failed</p>
+              <p className="text-xs text-red-600 mt-0.5">{uploadError}</p>
+            </div>
+          </div>
         )}
       </div>
 
@@ -888,76 +949,155 @@ function AnalyticsView() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/analytics').then(r => r.json()).then(d => {
-      if (d.error) setError(d.error); else setData(d); setLoading(false)
-    }).catch(() => { setError('Failed to load'); setLoading(false) })
+    fetch('/api/analytics')
+      .then(async r => {
+        const d = await r.json()
+        if (!r.ok || d.error) {
+          setError(d.error || `HTTP ${r.status}`)
+        } else {
+          setData(d)
+        }
+        setLoading(false)
+      })
+      .catch(e => { setError(`Network error: ${e.message}`); setLoading(false) })
   }, [])
 
-  if (loading) return <div className="flex items-center justify-center h-48 text-gray-400 text-sm animate-pulse">Loading analytics...</div>
+  const fmt = (n: number) => {
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`
+    return String(n || 0)
+  }
 
-  if (error) return (
-    <div className="max-w-sm mx-auto text-center py-12">
-      <span className="text-5xl block mb-4">📊</span>
-      <p className="text-gray-700 font-semibold mb-2">Analytics not connected</p>
-      <p className="text-xs text-gray-400 mb-5">{error}</p>
-      <a href="/api/auth/youtube" className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold">Connect YouTube →</a>
+  if (loading) return (
+    <div className="flex items-center justify-center h-48 gap-2 text-gray-400 text-sm">
+      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+      </svg>
+      Loading analytics...
     </div>
   )
 
+  if (error) {
+    const needsReconnect = error.includes('expired') || error.includes('not connected') || error.includes('authorize')
+    const needsApiEnable = error.includes('not enabled') || error.includes('PERMISSION_DENIED')
+    return (
+      <div className="max-w-md mx-auto py-12 space-y-4">
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4">
+          <p className="text-sm font-semibold text-red-800 mb-1">
+            {needsReconnect ? '🔗 YouTube not connected' : needsApiEnable ? '⚙️ API not enabled' : '❌ Analytics error'}
+          </p>
+          <p className="text-xs text-red-700">{error}</p>
+        </div>
+        {needsReconnect && (
+          <a href="/api/auth/youtube"
+            className="block w-full text-center py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold transition-colors">
+            ▶ Connect YouTube Account →
+          </a>
+        )}
+        {needsApiEnable && (
+          <a href="https://console.cloud.google.com/apis/library/youtubeAnalytics.googleapis.com"
+            target="_blank" rel="noreferrer"
+            className="block w-full text-center py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold transition-colors">
+            Enable YouTube Analytics API →
+          </a>
+        )}
+      </div>
+    )
+  }
+
   if (!data) return null
+
   const channel = data.channel as Record<string, unknown>
   const metrics = data.metrics as Record<string, number>
   const topVideos = data.topVideos as Record<string, unknown>[]
-  const period = data.period as Record<string, unknown>
-  const fmt = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n || 0)
+  const analyticsError = data.analyticsError as string | null
 
   return (
     <div className="max-w-3xl mx-auto w-full space-y-4 pb-6">
+      {/* Channel card */}
       {channel && (
         <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-3">
-          {channel.thumbnail ? <img src={String(channel.thumbnail)} className="w-12 h-12 rounded-full" alt="" /> : null}
+          {channel.thumbnail ? <img src={String(channel.thumbnail)} className="w-12 h-12 rounded-full object-cover" alt="" /> : (
+            <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">▶</div>
+          )}
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-gray-900 text-sm">{String(channel.name)}</p>
-            <p className="text-xs text-gray-500">{fmt(Number(channel.subscribers))} subscribers · {String(channel.videoCount)} videos</p>
+            <p className="font-semibold text-gray-900 text-sm">{String(channel.name || 'KathaKar')}</p>
+            <p className="text-xs text-gray-500">
+              {fmt(Number(channel.subscribers))} subscribers · {String(channel.videoCount)} videos · {fmt(Number(channel.totalViews))} total views
+            </p>
           </div>
-          <span className="text-xs text-gray-400 shrink-0">Last {String(period?.days)}d</span>
+          <a href="https://studio.youtube.com" target="_blank" rel="noreferrer"
+            className="shrink-0 px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 rounded-lg text-xs font-medium transition-colors">
+            Studio →
+          </a>
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {[
-          { label: 'Views',       value: fmt(metrics.views),            color: 'bg-blue-50 text-blue-700'    },
-          { label: 'Watch Time',  value: `${fmt(metrics.watchMinutes)}m`, color: 'bg-purple-50 text-purple-700' },
-          { label: 'Subscribers', value: `+${metrics.subscribersGained}`, color: 'bg-emerald-50 text-emerald-700' },
-          { label: 'Likes',       value: fmt(metrics.likes),            color: 'bg-pink-50 text-pink-700'    },
-          { label: 'Comments',    value: fmt(metrics.comments),         color: 'bg-amber-50 text-amber-700 col-span-2 md:col-span-1' },
-        ].map(m => (
-          <div key={m.label} className={`${m.color} rounded-2xl p-4 text-center`}>
-            <div className="text-2xl font-bold">{m.value}</div>
-            <div className="text-xs opacity-70 mt-0.5">{m.label}</div>
+      {/* Analytics metrics — last 28 days */}
+      {analyticsError ? (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-700">
+          ⚠️ {analyticsError}
+        </div>
+      ) : (
+        <div>
+          <p className="text-xs text-gray-400 mb-2 px-1">Last 28 days</p>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {[
+              { label: 'Views',        value: fmt(metrics.views),              color: 'bg-blue-50 text-blue-700'    },
+              { label: 'Watch Time',   value: `${fmt(metrics.watchMinutes)}m`, color: 'bg-purple-50 text-purple-700' },
+              { label: '+ Subscribers',value: `+${metrics.subscribersGained}`, color: 'bg-emerald-50 text-emerald-700' },
+              { label: 'Likes',        value: fmt(metrics.likes),              color: 'bg-pink-50 text-pink-700'    },
+              { label: 'Comments',     value: fmt(metrics.comments),           color: 'bg-amber-50 text-amber-700 col-span-2 md:col-span-1' },
+            ].map(m => (
+              <div key={m.label} className={`${m.color} rounded-2xl p-4 text-center`}>
+                <div className="text-2xl font-bold">{m.value}</div>
+                <div className="text-xs opacity-70 mt-0.5">{m.label}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      )}
 
+      {/* Recent videos */}
       {topVideos?.length > 0 && (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100">
-            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Top Videos</h3>
+          <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Recent Videos</h3>
+            <span className="text-xs text-gray-400">{topVideos.length} videos</span>
           </div>
           <div className="divide-y divide-gray-50">
             {topVideos.map((v, i) => (
               <a key={String(v.videoId)} href={String(v.url)} target="_blank" rel="noreferrer"
                 className="flex items-center gap-3 px-4 py-3 hover:bg-gray-50 transition-colors group">
-                <span className="text-xs font-bold text-gray-300 w-4 shrink-0">{i + 1}</span>
-                {v.thumbnail ? <img src={String(v.thumbnail)} className="w-10 h-7 rounded-lg object-cover shrink-0" alt="" /> : null}
-                <p className="flex-1 min-w-0 text-xs text-gray-700 truncate group-hover:text-indigo-600 transition-colors">{String(v.title)}</p>
+                <span className="text-xs font-bold text-gray-300 w-5 shrink-0">{i + 1}</span>
+                {v.thumbnail ? (
+                  <img src={String(v.thumbnail)} className="w-12 h-8 rounded-lg object-cover shrink-0" alt="" />
+                ) : (
+                  <div className="w-12 h-8 rounded-lg bg-gray-100 shrink-0" />
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs text-gray-700 truncate group-hover:text-indigo-600 transition-colors font-medium">{String(v.title)}</p>
+                  {v.publishedAt ? (
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {new Date(String(v.publishedAt)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </p>
+                  ) : null}
+                </div>
                 <div className="text-right shrink-0">
                   <p className="text-xs font-semibold text-gray-800">{fmt(Number(v.views))}</p>
-                  <p className="text-xs text-gray-400">views</p>
+                  <p className="text-xs text-gray-400">{fmt(Number(v.likes))} likes</p>
                 </div>
               </a>
             ))}
           </div>
+        </div>
+      )}
+
+      {topVideos?.length === 0 && (
+        <div className="text-center py-10 text-gray-400">
+          <p className="text-4xl mb-2">📹</p>
+          <p className="text-sm">No videos published yet</p>
         </div>
       )}
     </div>
