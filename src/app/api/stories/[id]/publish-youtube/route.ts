@@ -1,45 +1,43 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Readable } from 'stream'
-import { youtube } from '@/lib/youtube'
+import { uploadToYouTube } from '@/lib/youtube'
 import { storiesDb } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 600 // 10 min
+export const maxDuration = 600 // 10 min for YouTube upload
 
-function isAuthorized(req: NextRequest): boolean {
-  const token = req.cookies.get('auth_token')?.value
-  const expected = Buffer.from(`${process.env.DASHBOARD_PASSWORD}:${process.env.JWT_SECRET}`).toString('base64')
-  return token === expected
-}
-
+// POST body: { title, description, tags }
+// Video is read from GCS (stories/{id}/final/reel.mp4) — no large body from client
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  if (!isAuthorized(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
   const { id: storyId } = await params
-  if (!req.body) return NextResponse.json({ error: 'No video body' }, { status: 400 })
 
-  const title = decodeURIComponent(req.headers.get('x-title') || storyId.replace(/_/g, ' '))
-  const description = decodeURIComponent(req.headers.get('x-description') || '')
-  const tagsRaw = decodeURIComponent(req.headers.get('x-tags') || 'shorts,hindi story,kathakar')
-  const tags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean)
+  let title = storyId, description = '', tags: string[] = ['shorts', 'hindi story', 'kathakar']
 
   try {
-    const readable = Readable.fromWeb(req.body as Parameters<typeof Readable.fromWeb>[0])
+    const body = await req.json()
+    title = body.title || title
+    description = body.description || description
+    tags = Array.isArray(body.tags) ? body.tags : tags
+  } catch { /* use defaults */ }
 
-    const result = await youtube.videos.insert({
-      part: ['snippet', 'status'],
-      requestBody: {
-        snippet: { title: title.slice(0, 100), description, tags, categoryId: '22', defaultLanguage: 'hi', defaultAudioLanguage: 'hi' },
-        status: { privacyStatus: 'public', selfDeclaredMadeForKids: false },
-      },
-      media: { mimeType: 'video/mp4', body: readable },
-    }, { timeout: 600_000 })
+  // Build the GCS public URL for the uploaded reel
+  const gcsUrl = `https://storage.googleapis.com/${process.env.GCS_BUCKET}/stories/${storyId}/final/reel.mp4`
 
-    const videoId = result.data.id
+  // Verify the file exists in GCS before attempting YouTube upload
+  const headRes = await fetch(gcsUrl, { method: 'HEAD' }).catch(() => null)
+  if (!headRes || !headRes.ok) {
+    return NextResponse.json({
+      error: 'Video not found in GCS. Upload the final reel first using the step above.',
+    }, { status: 400 })
+  }
+
+  try {
+    // Stream from GCS → YouTube (no client body involved, no size limit)
+    const result = await uploadToYouTube({ videoPath: gcsUrl, title, description, tags, isShort: true })
+
+    const videoId = result.id
     if (!videoId) throw new Error('YouTube returned no video ID')
     const youtubeUrl = `https://youtube.com/shorts/${videoId}`
 
-    // Store in PostgreSQL
     await storiesDb.update(storyId, { youtube_link: youtubeUrl, status: 'published' })
 
     return NextResponse.json({ success: true, youtubeUrl, videoId })

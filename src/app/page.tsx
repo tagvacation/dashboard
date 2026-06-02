@@ -620,8 +620,15 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   const [title, setTitle] = useState(story.topic.slice(0, 90))
   const [description, setDescription] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
   const [tags, setTags] = useState('shorts,hindi story,moral story,kathakar')
-  const [uploading, setUploading] = useState(false)
-  const [progress, setProgress] = useState(0)
+
+  // Step 1: GCS upload state
+  const [gcsUploading, setGcsUploading] = useState(false)
+  const [gcsProgress, setGcsProgress] = useState(0)
+  const [gcsReady, setGcsReady] = useState(false)
+
+  // Step 2: YouTube publish state
+  const [ytUploading, setYtUploading] = useState(false)
+
   const [error, setError] = useState('')
   const [showManual, setShowManual] = useState(false)
   const [manualUrl, setManualUrl] = useState('')
@@ -662,36 +669,56 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
     setDeleting(false)
   }
 
-  // ── File upload via XHR ─────────────────────────────────────────────────────
-  const upload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── Step 1: Upload to GCS via XHR (streaming, no size limit) ─────────────────
+  const uploadToGcs = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     e.target.value = ''
     if (!file.type.includes('video') && !file.name.endsWith('.mp4')) { setError('Only MP4 files supported'); return }
     const sizeMB = file.size / (1024 * 1024)
     if (sizeMB > 1024) { setError(`File too large: ${sizeMB.toFixed(0)}MB (max 1GB)`); return }
-    setUploading(true); setError(''); setProgress(0)
+    setGcsUploading(true); setError(''); setGcsProgress(0); setGcsReady(false)
 
     const xhr = new XMLHttpRequest()
-    xhr.open('POST', `/api/stories/${story.story_id}/publish-youtube`)
+    xhr.open('POST', `/api/stories/${story.story_id}/upload-final`)
     xhr.setRequestHeader('Content-Type', 'video/mp4')
-    xhr.setRequestHeader('X-Title', encodeURIComponent(title))
-    xhr.setRequestHeader('X-Description', encodeURIComponent(description))
-    xhr.setRequestHeader('X-Tags', encodeURIComponent(tags))
-    xhr.upload.onprogress = ev => { if (ev.lengthComputable) setProgress(Math.round(ev.loaded / ev.total * 100)) }
+    xhr.setRequestHeader('X-Filename', file.name)
+    xhr.upload.onprogress = ev => { if (ev.lengthComputable) setGcsProgress(Math.round(ev.loaded / ev.total * 100)) }
     xhr.onload = () => {
       try {
         const data = JSON.parse(xhr.responseText)
-        if (xhr.status < 300 && data.youtubeUrl) {
-          setYtLink(data.youtubeUrl)
-          onUpdate({ ...story, youtube_link: data.youtubeUrl, status: 'published' })
-        } else { setError(data.error || `Upload failed (HTTP ${xhr.status})`) }
+        if (xhr.status < 300 && data.success) {
+          setGcsReady(true); setGcsProgress(100)
+          onUpdate({ ...story, status: 'post_produced' })
+        } else { setError(data.error || `GCS upload failed (HTTP ${xhr.status})`) }
       } catch { setError('Invalid server response') }
-      setUploading(false)
+      setGcsUploading(false)
     }
-    xhr.onerror = () => { setError('Network error — check connection'); setUploading(false) }
+    xhr.onerror = () => { setError('Network error — check connection'); setGcsUploading(false) }
     xhr.timeout = 15 * 60 * 1000
-    xhr.ontimeout = () => { setError('Timed out — try again'); setUploading(false) }
+    xhr.ontimeout = () => { setError('Upload timed out — try again'); setGcsUploading(false) }
     xhr.send(file)
+  }
+
+  // ── Step 2: Publish to YouTube (server reads from GCS, no client body) ────────
+  const publishToYoutube = async () => {
+    setYtUploading(true); setError('')
+    try {
+      const res = await fetch(`/api/stories/${story.story_id}/publish-youtube`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, description, tags: tags.split(',').map(t => t.trim()).filter(Boolean) }),
+      })
+      const data = await res.json()
+      if (res.ok && data.youtubeUrl) {
+        setYtLink(data.youtubeUrl)
+        onUpdate({ ...story, youtube_link: data.youtubeUrl, status: 'published' })
+      } else {
+        setError(data.error || `YouTube upload failed (HTTP ${res.status})`)
+      }
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Network error')
+    }
+    setYtUploading(false)
   }
 
   const missingClips = clips.length === 0
@@ -794,29 +821,61 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
         </div>
       )}
 
-      {/* Upload button / progress */}
-      {uploading ? (
-        <div className="py-4 px-3 bg-red-50 border border-red-200 rounded-xl">
-          <div className="flex items-center gap-2 mb-2">
-            <svg className="animate-spin w-4 h-4 text-red-500 shrink-0" fill="none" viewBox="0 0 24 24">
+      {/* ── STEP 1: Upload to GCS ── */}
+      <div className={`rounded-xl border p-3 transition-all ${gcsReady ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-base">{gcsReady ? '✅' : '1️⃣'}</span>
+          <p className="text-xs font-semibold text-gray-700">
+            {gcsReady ? 'Video saved — ready to publish' : 'Step 1: Save video to cloud'}
+          </p>
+        </div>
+        {gcsUploading ? (
+          <div>
+            <div className="flex justify-between text-xs text-indigo-600 mb-1">
+              <span>{gcsProgress < 100 ? `Uploading... ${gcsProgress}%` : 'Saving...'}</span>
+              <span>{gcsProgress}%</span>
+            </div>
+            <div className="w-full bg-indigo-100 rounded-full h-1.5">
+              <div className="bg-indigo-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${gcsProgress}%` }} />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">Do not close this tab</p>
+          </div>
+        ) : gcsReady ? (
+          <label className="block text-center py-1.5 text-xs text-emerald-600 hover:text-emerald-800 cursor-pointer transition-colors">
+            🔄 Replace with different file
+            <input type="file" accept="video/mp4,video/*" className="hidden" onChange={uploadToGcs} />
+          </label>
+        ) : (
+          <label className="block w-full text-center py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors">
+            📤 Select & Upload MP4 to Cloud
+            <input type="file" accept="video/mp4,video/*" className="hidden" onChange={uploadToGcs} />
+          </label>
+        )}
+      </div>
+
+      {/* ── STEP 2: Publish to YouTube ── */}
+      <div className={`rounded-xl border p-3 transition-all ${!gcsReady ? 'opacity-40 pointer-events-none' : ''} ${gcsReady ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-100'}`}>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-base">2️⃣</span>
+          <p className="text-xs font-semibold text-gray-700">Step 2: Publish to YouTube Shorts</p>
+          {!gcsReady && <span className="text-xs text-gray-400">(complete step 1 first)</span>}
+        </div>
+        {ytUploading ? (
+          <div className="py-3 text-center">
+            <svg className="animate-spin w-5 h-5 text-red-500 mx-auto mb-1" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
             </svg>
-            <span className="text-xs font-medium text-red-700">
-              {progress < 100 ? `Uploading... ${progress}%` : 'Processing on YouTube...'}
-            </span>
+            <p className="text-xs text-red-600 font-medium">Uploading to YouTube...</p>
+            <p className="text-xs text-gray-400 mt-0.5">This may take a few minutes</p>
           </div>
-          <div className="w-full bg-red-100 rounded-full h-1.5">
-            <div className="bg-red-500 h-1.5 rounded-full transition-all duration-300" style={{ width: `${progress}%` }} />
-          </div>
-          <p className="text-xs text-red-400 mt-1.5">Do not close this tab</p>
-        </div>
-      ) : (
-        <label className="block w-full text-center py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold cursor-pointer transition-colors">
-          ▶ Select MP4 & Upload to YouTube Shorts
-          <input type="file" accept="video/mp4,video/*" className="hidden" onChange={upload} />
-        </label>
-      )}
+        ) : (
+          <button onClick={publishToYoutube} disabled={!gcsReady}
+            className="w-full py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold transition-colors">
+            ▶ Publish to YouTube Shorts
+          </button>
+        )}
+      </div>
 
       {/* Manual URL option */}
       {!showManual ? (
