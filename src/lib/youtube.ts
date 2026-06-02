@@ -1,4 +1,5 @@
 import { google } from 'googleapis'
+import { Readable } from 'stream'
 
 const oauth2Client = new google.auth.OAuth2(
   process.env.YOUTUBE_CLIENT_ID,
@@ -19,18 +20,20 @@ export async function uploadToYouTube({
   tags,
   isShort = true,
 }: {
-  videoPath: string // GCS public URL
+  videoPath: string  // GCS public URL
   title: string
   description: string
   tags: string[]
   isShort?: boolean
 }) {
-  // Download video from GCS first
-  const res = await fetch(videoPath)
-  const buffer = await res.arrayBuffer()
-  const stream = require('stream')
-  const readable = new stream.PassThrough()
-  readable.end(Buffer.from(buffer))
+  // Stream directly from GCS URL — no memory buffer (fixes ECONNRESET on large files)
+  const res = await fetch(videoPath, { headers: { 'Accept': 'video/mp4' } })
+  if (!res.ok || !res.body) {
+    throw new Error(`Failed to fetch video from GCS: ${res.status} ${res.statusText}`)
+  }
+
+  // Convert Web ReadableStream to Node.js Readable for googleapis
+  const readable = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0])
 
   const response = await youtube.videos.insert({
     part: ['snippet', 'status'],
@@ -39,7 +42,7 @@ export async function uploadToYouTube({
         title: title.slice(0, 100),
         description,
         tags,
-        categoryId: '22', // People & Blogs
+        categoryId: '22',   // People & Blogs
         defaultLanguage: 'hi',
         defaultAudioLanguage: 'hi',
       },
@@ -52,6 +55,9 @@ export async function uploadToYouTube({
       mimeType: 'video/mp4',
       body: readable,
     },
+  }, {
+    // Increase timeout for large video uploads (10 minutes)
+    timeout: 600_000,
   })
 
   return response.data

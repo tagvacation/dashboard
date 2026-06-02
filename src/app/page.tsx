@@ -496,8 +496,12 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   const uploadFinal = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     setUploading(true)
-    const fd = new FormData(); fd.append('file', file)
-    const res = await fetch(`/api/stories/${story.story_id}/upload-final`, { method: 'POST', body: fd })
+    // Send raw binary — avoids 10MB Next.js FormData limit, enables GCS streaming
+    const res = await fetch(`/api/stories/${story.story_id}/upload-final`, {
+      method: 'POST',
+      body: file,
+      headers: { 'Content-Type': 'video/mp4', 'X-Filename': file.name },
+    })
     const data = await res.json()
     if (data.finalUrl) { setFinalUrl(data.finalUrl); onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true }) }
     setUploading(false)

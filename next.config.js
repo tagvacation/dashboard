@@ -1,5 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '500mb',
+    },
+  },
   images: {
     remotePatterns: [
       {
@@ -9,8 +14,7 @@ const nextConfig = {
       },
     ],
   },
-  // Allow ffmpeg binary access
-  serverExternalPackages: ['fluent-ffmpeg', '@google-cloud/storage'],
+  serverExternalPackages: ['fluent-ffmpeg', '@google-cloud/storage', 'postgres'],
 }
 
 module.exports = nextConfig

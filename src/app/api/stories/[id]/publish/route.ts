@@ -3,6 +3,7 @@ import { uploadToYouTube } from '@/lib/youtube'
 import { google } from 'googleapis'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 600 // 10 min — YouTube uploads can be slow
 
 
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
