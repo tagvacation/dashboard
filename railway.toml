@@ -4,6 +4,9 @@ builder = "NIXPACKS"
 [build.nixpacksPlan]
 aptPkgs = ["ffmpeg"]
 
+[build.nixpacksPlan.variables]
+NIXPACKS_NODE_VERSION = "20"
+
 [deploy]
 startCommand = "npm start"
 healthcheckPath = "/api/health"
