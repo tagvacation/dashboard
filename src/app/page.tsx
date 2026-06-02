@@ -734,10 +734,10 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   const [description, setDescription] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
   const [tags, setTags] = useState('shorts,hindi story,moral story,kathakar')
 
-  // Step 1: GCS upload state
+  // Step 1: GCS upload state — initialize from story.hasFinal (file may already exist in GCS)
   const [gcsUploading, setGcsUploading] = useState(false)
   const [gcsProgress, setGcsProgress] = useState(0)
-  const [gcsReady, setGcsReady] = useState(false)
+  const [gcsReady, setGcsReady] = useState(!!story.hasFinal)
 
   // Step 2: YouTube publish state
   const [ytUploading, setYtUploading] = useState(false)
@@ -760,8 +760,15 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   const [savingManual, setSavingManual] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // Load existing schedule for this story
+  // On mount: verify GCS file existence + load schedule
   useEffect(() => {
+    // Check GCS directly (HEAD request) — handles case where hasFinal is stale
+    const gcsUrl = `https://storage.googleapis.com/${process.env.NEXT_PUBLIC_GCS_BUCKET || 'ai_clip_007'}/stories/${story.story_id}/final/reel.mp4`
+    fetch(gcsUrl, { method: 'HEAD' }).then(r => {
+      if (r.ok && !gcsReady) setGcsReady(true)
+    }).catch(() => {}) // non-fatal
+
+    // Load schedule
     fetch('/api/schedule').then(r => r.json()).then(d => {
       const post = (d.posts || []).find((p: { story_id: string }) => p.story_id === story.story_id)
       if (post) {
@@ -1053,11 +1060,18 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
 
       {/* ── STEP 1: Upload to GCS ── */}
       <div className={`rounded-xl border p-3 transition-all ${gcsReady ? 'bg-emerald-50 border-emerald-200' : 'bg-gray-50 border-gray-200'}`}>
-        <div className="flex items-center gap-2 mb-2">
-          <span className="text-base">{gcsReady ? '✅' : '1️⃣'}</span>
-          <p className="text-xs font-semibold text-gray-700">
-            {gcsReady ? 'Video saved — ready to publish' : 'Step 1: Save video to cloud'}
-          </p>
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="flex items-center gap-2">
+            <span className="text-base">{gcsReady ? '✅' : '1️⃣'}</span>
+            <p className="text-xs font-semibold text-gray-700">
+              {gcsReady ? 'Final video in cloud ✓' : 'Step 1: Upload edited video to cloud'}
+            </p>
+          </div>
+          {gcsReady && !gcsUploading && (
+            <a href={`https://storage.googleapis.com/${process.env.NEXT_PUBLIC_GCS_BUCKET || 'ai_clip_007'}/stories/${story.story_id}/final/reel.mp4`}
+              target="_blank" rel="noreferrer"
+              className="text-xs text-emerald-600 hover:underline shrink-0">↗ View</a>
+          )}
         </div>
         {gcsUploading ? (
           <div>
@@ -1071,7 +1085,7 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
             <p className="text-xs text-gray-400 mt-1">Do not close this tab</p>
           </div>
         ) : gcsReady ? (
-          <label className="block text-center py-1.5 text-xs text-emerald-600 hover:text-emerald-800 cursor-pointer transition-colors">
+          <label className="block text-center py-1.5 text-xs text-emerald-600 hover:text-emerald-800 cursor-pointer transition-colors border border-dashed border-emerald-200 rounded-lg hover:border-emerald-400">
             🔄 Replace with different file
             <input type="file" accept="video/mp4,video/*" className="hidden" onChange={uploadToGcs} />
           </label>
