@@ -480,49 +480,95 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   const [activeClip, setActiveClip] = useState<string | null>(story.clips[0]?.url || null)
   const [finalUrl, setFinalUrl] = useState(story.final_url || '')
   const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
   const [downloading, setDownloading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [deletingClip, setDeletingClip] = useState('')
   const [distLinks, setDistLinks] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState('')
+  const [saveError, setSaveError] = useState('')
+
+  // Fetch fresh data from server (after mutations)
+  const refreshStory = async () => {
+    const res = await fetch(`/api/stories/${story.story_id}`)
+    if (res.ok) {
+      const data = await res.json()
+      if (data.story) {
+        setClips(data.story.clips || [])
+        setFinalUrl(data.story.final_url || '')
+        onUpdate(data.story)
+      }
+    }
+  }
 
   const downloadZip = async () => {
     setDownloading(true)
     const res = await fetch(`/api/stories/${story.story_id}/download`)
+    if (!res.ok) { setDownloading(false); return }
     const blob = await res.blob()
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${story.story_id}.zip`; a.click()
     setDownloading(false)
   }
 
+  const deleteStory = async () => {
+    if (!confirm('Delete this story and ALL files from GCS + sheet? This cannot be undone.')) return
+    setDeleting(true)
+    const res = await fetch(`/api/stories/${story.story_id}`, { method: 'DELETE' })
+    if (res.ok) { onDelete() } else {
+      const d = await res.json(); alert(`Delete failed: ${d.error}`)
+      setDeleting(false)
+    }
+  }
+
   const uploadFinal = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
-    setUploading(true)
-    // Send raw binary — avoids 10MB Next.js FormData limit, enables GCS streaming
+    setUploading(true); setUploadError('')
     const res = await fetch(`/api/stories/${story.story_id}/upload-final`, {
       method: 'POST',
       body: file,
       headers: { 'Content-Type': 'video/mp4', 'X-Filename': file.name },
     })
     const data = await res.json()
-    if (data.finalUrl) { setFinalUrl(data.finalUrl); onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true }) }
+    if (res.ok && data.finalUrl) {
+      setFinalUrl(data.finalUrl)
+      onUpdate({ ...story, final_url: data.finalUrl, hasFinal: true, status: story.status === 'clips_ready' ? 'post_produced' : story.status })
+    } else {
+      setUploadError(data.error || `Upload failed (${res.status})`)
+    }
     setUploading(false)
   }
 
   const deleteClip = async (clipName: string, clipUrl: string) => {
-    if (!confirm('Delete this clip?')) return
+    if (!confirm('Delete this clip from GCS?')) return
     setDeletingClip(clipName)
-    await fetch(`/api/stories/${story.story_id}/clip?path=${encodeURIComponent(clipName)}`, { method: 'DELETE' })
-    const remaining = clips.filter(c => c.name !== clipName)
-    setClips(remaining)
-    if (activeClip === clipUrl) setActiveClip(remaining[0]?.url || null)
+    const res = await fetch(`/api/stories/${story.story_id}/clip?path=${encodeURIComponent(clipName)}`, { method: 'DELETE' })
+    const data = await res.json()
+    if (res.ok && data.remainingClips) {
+      // Use server-confirmed remaining list
+      setClips(data.remainingClips)
+      onUpdate({ ...story, clips: data.remainingClips, scenes_count: String(data.remainingClips.length) })
+      if (activeClip === clipUrl) setActiveClip(data.remainingClips[0]?.url || null)
+    } else if (res.ok) {
+      const remaining = clips.filter(c => c.name !== clipName)
+      setClips(remaining)
+      if (activeClip === clipUrl) setActiveClip(remaining[0]?.url || null)
+    }
     setDeletingClip('')
   }
 
   const markPublished = async (platform: string) => {
-    setSaving(platform)
-    await fetch(`/api/stories/${story.story_id}/distribution`, {
+    setSaving(platform); setSaveError('')
+    const res = await fetch(`/api/stories/${story.story_id}/distribution`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ platform, url: distLinks[platform] || '', status: 'published' }),
     })
+    if (res.ok) {
+      const data = await res.json()
+      const newPubTo = JSON.stringify(data.distribution || {})
+      onUpdate({ ...story, status: 'published', published_to: newPubTo })
+    } else {
+      const d = await res.json(); setSaveError(d.error || 'Failed to save')
+    }
     setSaving('')
   }
 
@@ -534,21 +580,28 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
         <div className="flex items-start gap-3 mb-3">
           <div className="flex-1">
             <p className="text-sm font-semibold text-gray-900 leading-relaxed">{story.topic}</p>
-            <div className="flex items-center gap-2 mt-1.5">
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <span className="text-xs text-gray-400">{story.story_id}</span>
               {story.theme && <span className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full">{story.theme}</span>}
               {story.notes && <span className="text-xs px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full truncate max-w-[180px]" title={story.notes}>⚠ {story.notes.slice(0, 30)}</span>}
             </div>
           </div>
+          {/* Refresh button */}
+          <button onClick={refreshStory} title="Refresh from server"
+            className="shrink-0 p-2 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-xl transition-colors">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
         </div>
         <div className="flex gap-2">
           <button onClick={downloadZip} disabled={downloading}
             className="flex-1 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
             {downloading ? '⏳ Preparing...' : '⬇ Download ZIP'}
           </button>
-          <button onClick={() => { if (confirm('Delete story and all files?')) { fetch(`/api/stories/${story.story_id}`, { method: 'DELETE' }); onDelete() } }}
-            className="px-4 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-semibold transition-colors">
-            🗑
+          <button onClick={deleteStory} disabled={deleting}
+            className="px-4 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
+            {deleting ? '⏳' : '🗑'}
           </button>
         </div>
       </div>
@@ -558,19 +611,38 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">🎬 Final Reel</h3>
         {finalUrl ? (
           <div>
-            <video controls className="w-full bg-gray-900 rounded-xl mb-2" style={{ maxHeight: '300px' }} src={finalUrl} />
-            <label className="text-xs text-gray-400 cursor-pointer hover:text-indigo-500 transition-colors">
-              🔄 Replace reel
-              <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} />
-            </label>
+            <video controls className="w-full bg-gray-900 rounded-xl mb-3" style={{ maxHeight: '300px' }} src={finalUrl} />
+            <div className="flex items-center gap-3">
+              <a href={finalUrl} download className="text-xs text-indigo-500 hover:underline">⬇ Download MP4</a>
+              <label className="text-xs text-gray-400 cursor-pointer hover:text-indigo-500 transition-colors">
+                🔄 Replace
+                <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} />
+              </label>
+            </div>
           </div>
         ) : (
-          <label className={`flex flex-col items-center py-10 border-2 border-dashed border-gray-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-colors ${uploading ? 'opacity-50 pointer-events-none' : ''}`}>
-            <span className="text-3xl mb-2">📤</span>
-            <span className="text-sm font-medium text-gray-600">{uploading ? 'Uploading...' : 'Upload Final Reel'}</span>
-            <span className="text-xs text-gray-400 mt-1">MP4 from CapCut / DaVinci / any editor</span>
+          <label className={`flex flex-col items-center py-10 border-2 border-dashed rounded-xl cursor-pointer transition-colors
+            ${uploading ? 'opacity-50 pointer-events-none border-gray-200' : 'border-gray-200 hover:border-indigo-400'}`}>
+            {uploading ? (
+              <>
+                <svg className="animate-spin w-8 h-8 text-indigo-400 mb-2" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+                <span className="text-sm font-medium text-indigo-500">Uploading...</span>
+              </>
+            ) : (
+              <>
+                <span className="text-3xl mb-2">📤</span>
+                <span className="text-sm font-medium text-gray-600">Upload Final Reel</span>
+                <span className="text-xs text-gray-400 mt-1">MP4 from CapCut / DaVinci / any editor</span>
+              </>
+            )}
             <input type="file" accept="video/mp4" className="hidden" onChange={uploadFinal} disabled={uploading} />
           </label>
+        )}
+        {uploadError && (
+          <div className="mt-2 px-3 py-2 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">{uploadError}</div>
         )}
       </div>
 
@@ -629,18 +701,39 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
         {[
           { key: 'instagram', label: 'Instagram', color: 'bg-gradient-to-r from-pink-500 to-orange-400' },
           { key: 'tiktok',    label: 'TikTok',    color: 'bg-gray-900' },
-        ].map(p => (
-          <div key={p.key} className="flex items-center gap-2 mb-2">
-            <span className={`text-xs px-2.5 py-1.5 rounded-lg ${p.color} text-white w-20 text-center font-medium shrink-0`}>{p.label}</span>
-            <input type="url" placeholder="Paste URL after posting" value={distLinks[p.key] || ''}
-              onChange={e => setDistLinks(prev => ({ ...prev, [p.key]: e.target.value }))}
-              className="flex-1 min-w-0 px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 transition-colors" />
-            <button onClick={() => markPublished(p.key)} disabled={saving === p.key}
-              className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-medium shrink-0">
-              {saving === p.key ? '...' : '✓ Mark'}
-            </button>
-          </div>
-        ))}
+        ].map(p => {
+          // Check if already marked published
+          const pubData = (() => { try { return JSON.parse(story.published_to || '{}') } catch { return {} } })()
+          const platformData = pubData[p.key]
+          const isPublished = platformData?.status === 'published'
+          return (
+            <div key={p.key} className="mb-2">
+              <div className="flex items-center gap-2">
+                <span className={`text-xs px-2.5 py-1.5 rounded-lg ${p.color} text-white w-20 text-center font-medium shrink-0`}>{p.label}</span>
+                {isPublished ? (
+                  <div className="flex-1 flex items-center gap-2">
+                    <a href={platformData.url} target="_blank" rel="noreferrer"
+                      className="flex-1 min-w-0 px-3 py-2 text-xs bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-700 truncate hover:underline">
+                      {platformData.url || 'Published'}
+                    </a>
+                    <span className="text-xs text-emerald-600 font-medium shrink-0">✓</span>
+                  </div>
+                ) : (
+                  <>
+                    <input type="url" placeholder="Paste URL after posting" value={distLinks[p.key] || ''}
+                      onChange={e => setDistLinks(prev => ({ ...prev, [p.key]: e.target.value }))}
+                      className="flex-1 min-w-0 px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 transition-colors" />
+                    <button onClick={() => markPublished(p.key)} disabled={saving === p.key}
+                      className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-medium shrink-0">
+                      {saving === p.key ? '...' : '✓ Mark'}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          )
+        })}
+        {saveError && <p className="text-xs text-red-600 mt-2">{saveError}</p>}
       </div>
     </div>
   )
