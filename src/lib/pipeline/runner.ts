@@ -11,7 +11,7 @@
  */
 
 import { Storage } from '@google-cloud/storage'
-import { pipelineDb, sceneJobsDb, storiesDb } from '../db'
+import { pipelineDb, sceneJobsDb, storiesDb, categoriesDb, gcpCredentialsDb } from '../db'
 import { pickTopic, writeScript, rewriteFilteredPrompt } from './gemini'
 import { submitVeoClip, pollVeoOperation } from './veo'
 import { generateFullNarration } from './tts'
@@ -182,7 +182,7 @@ async function processAllScenes(
 
 // ─── Main runner ──────────────────────────────────────────────────────────────
 
-export async function runPipeline(storyId: string) {
+export async function runPipeline(storyId: string, categoryId?: string) {
   const log = async (msg: string) => {
     await pipelineDb.appendLog(storyId, msg)
     console.log(`[${storyId}] ${msg}`)
@@ -196,6 +196,19 @@ export async function runPipeline(storyId: string) {
     let run = await pipelineDb.get(storyId)
     if (!run) throw new Error('Pipeline run not found in DB')
 
+    // Load category-specific prompts/config (falls back to global if empty)
+    const category = categoryId ? await categoriesDb.get(categoryId) : await categoriesDb.getDefault()
+    const categoryOverrides = category ? {
+      topic_picker: category.prompt_topic_picker || undefined,
+      script_writer: category.prompt_script_writer || undefined,
+      scene_rewrite: category.prompt_scene_rewrite || undefined,
+      veo_style: category.veo_style_suffix || undefined,
+      scene_count_min: category.scene_count_min,
+      scene_count_max: category.scene_count_max,
+    } : {}
+
+    await log(`Category: ${category?.name || 'KathaKar (default)'}`)
+
     // ── Step 1: Pick Topic ──────────────────────────────────────────────────
     let topic = run.topic
     let theme = run.theme
@@ -203,12 +216,13 @@ export async function runPipeline(storyId: string) {
     if (!topic) {
       await log('Picking topic...')
       await setStep('topic')
-      const result = await pickTopic(storyId)
+      const result = await pickTopic(storyId, categoryOverrides.topic_picker)
       topic = result.topic
       theme = result.theme
       await setStep('topic', { topic, theme })
       await log(`Topic: ${topic}`)
       await storiesDb.create({ story_id: storyId, topic, theme })
+      await storiesDb.update(storyId, { category_id: categoryId || category?.id || 'kathakar' })
     }
 
     // ── Step 2: Write Script ────────────────────────────────────────────────
@@ -224,7 +238,7 @@ export async function runPipeline(storyId: string) {
       let lastErr: Error | null = null
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          script = await writeScript(storyId, topic, theme)
+          script = await writeScript(storyId, topic, theme, categoryOverrides.script_writer)
           break
         } catch (e) {
           lastErr = e as Error

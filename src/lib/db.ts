@@ -72,6 +72,56 @@ async function createTables() {
     )
   `
   await sql`CREATE INDEX IF NOT EXISTS idx_scene_jobs_story ON scene_jobs (story_id)`
+
+  // Content categories — different types of content with their own prompts + style
+  await sql`
+    CREATE TABLE IF NOT EXISTS content_categories (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      emoji TEXT DEFAULT '🎬',
+      description TEXT DEFAULT '',
+      perspective TEXT DEFAULT 'third_person',  -- third_person | first_person | character
+      prompt_topic_picker TEXT DEFAULT '',       -- empty = use global settings
+      prompt_script_writer TEXT DEFAULT '',
+      prompt_scene_rewrite TEXT DEFAULT '',
+      veo_style_suffix TEXT DEFAULT '',          -- animation style override
+      scene_count_min INTEGER DEFAULT 8,
+      scene_count_max INTEGER DEFAULT 10,
+      is_active BOOLEAN DEFAULT true,
+      is_default BOOLEAN DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+
+  // GCP credentials — multiple Vertex AI accounts for Veo + TTS
+  await sql`
+    CREATE TABLE IF NOT EXISTS gcp_credentials (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      bucket TEXT NOT NULL,
+      sa_json TEXT NOT NULL,
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+
+  // Scheduled posts — DB-backed cron queue
+  await sql`
+    CREATE TABLE IF NOT EXISTS scheduled_posts (
+      id SERIAL PRIMARY KEY,
+      story_id TEXT NOT NULL,
+      channel_id TEXT DEFAULT 'default',
+      platform TEXT NOT NULL,              -- youtube | instagram | facebook
+      scheduled_at TIMESTAMPTZ NOT NULL,
+      status TEXT DEFAULT 'pending',       -- pending | processing | posted | failed
+      posted_at TIMESTAMPTZ,
+      result_url TEXT DEFAULT '',
+      error TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+  await sql`CREATE INDEX IF NOT EXISTS idx_scheduled_posts_status ON scheduled_posts (status, scheduled_at)`
   await sql`
     CREATE TABLE IF NOT EXISTS stories (
       story_id TEXT PRIMARY KEY,
@@ -86,7 +136,10 @@ async function createTables() {
       storage_path TEXT DEFAULT '',
       audio_url TEXT DEFAULT '',
       youtube_link TEXT DEFAULT '',
-      notes TEXT DEFAULT ''
+      notes TEXT DEFAULT '',
+      category_id TEXT DEFAULT 'kathakar',
+      channel_id TEXT DEFAULT 'default',
+      gcp_credential_id TEXT DEFAULT ''
     )
   `
 }
@@ -218,6 +271,9 @@ export interface StoryRow {
   audio_url: string
   youtube_link: string
   notes: string
+  category_id: string
+  channel_id: string
+  gcp_credential_id: string
 }
 
 export const storiesDb = {
@@ -252,6 +308,8 @@ export const storiesDb = {
     if (updates.notes !== undefined) await sql`UPDATE stories SET notes = ${updates.notes}, updated_at = ${now} WHERE story_id = ${storyId}`
     if (updates.clips_generated_at !== undefined) await sql`UPDATE stories SET clips_generated_at = ${updates.clips_generated_at ?? null}, updated_at = ${now} WHERE story_id = ${storyId}`
     if (updates.storage_path !== undefined) await sql`UPDATE stories SET storage_path = ${updates.storage_path}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.category_id !== undefined) await sql`UPDATE stories SET category_id = ${updates.category_id}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.channel_id !== undefined) await sql`UPDATE stories SET channel_id = ${updates.channel_id}, updated_at = ${now} WHERE story_id = ${storyId}`
   },
 
   delete: async (storyId: string): Promise<void> => {
@@ -316,6 +374,136 @@ export const sceneJobsDb = {
   deleteByStory: async (storyId: string): Promise<void> => {
     await ensureDb()
     await sql`DELETE FROM scene_jobs WHERE story_id = ${storyId}`
+  },
+}
+
+// ─── Content Categories ───────────────────────────────────────────────────────
+
+export interface ContentCategory {
+  id: string; name: string; emoji: string; description: string
+  perspective: string; prompt_topic_picker: string; prompt_script_writer: string
+  prompt_scene_rewrite: string; veo_style_suffix: string
+  scene_count_min: number; scene_count_max: number
+  is_active: boolean; is_default: boolean; created_at: string
+}
+
+export const categoriesDb = {
+  getAll: async (): Promise<ContentCategory[]> => {
+    await ensureDb()
+    return sql<ContentCategory[]>`SELECT * FROM content_categories WHERE is_active = true ORDER BY is_default DESC, created_at ASC`
+  },
+  get: async (id: string): Promise<ContentCategory | null> => {
+    await ensureDb()
+    const [row] = await sql<ContentCategory[]>`SELECT * FROM content_categories WHERE id = ${id}`
+    return row ?? null
+  },
+  getDefault: async (): Promise<ContentCategory | null> => {
+    await ensureDb()
+    const [row] = await sql<ContentCategory[]>`SELECT * FROM content_categories WHERE is_default = true LIMIT 1`
+    return row ?? null
+  },
+  upsert: async (cat: Omit<ContentCategory, 'created_at'>): Promise<ContentCategory> => {
+    await ensureDb()
+    if (cat.is_default) await sql`UPDATE content_categories SET is_default = false`
+    const [row] = await sql<ContentCategory[]>`
+      INSERT INTO content_categories (id, name, emoji, description, perspective, prompt_topic_picker, prompt_script_writer, prompt_scene_rewrite, veo_style_suffix, scene_count_min, scene_count_max, is_active, is_default)
+      VALUES (${cat.id}, ${cat.name}, ${cat.emoji}, ${cat.description}, ${cat.perspective},
+              ${cat.prompt_topic_picker}, ${cat.prompt_script_writer}, ${cat.prompt_scene_rewrite},
+              ${cat.veo_style_suffix}, ${cat.scene_count_min}, ${cat.scene_count_max}, ${cat.is_active}, ${cat.is_default})
+      ON CONFLICT (id) DO UPDATE SET
+        name = EXCLUDED.name, emoji = EXCLUDED.emoji, description = EXCLUDED.description,
+        perspective = EXCLUDED.perspective, prompt_topic_picker = EXCLUDED.prompt_topic_picker,
+        prompt_script_writer = EXCLUDED.prompt_script_writer, prompt_scene_rewrite = EXCLUDED.prompt_scene_rewrite,
+        veo_style_suffix = EXCLUDED.veo_style_suffix, scene_count_min = EXCLUDED.scene_count_min,
+        scene_count_max = EXCLUDED.scene_count_max, is_active = EXCLUDED.is_active, is_default = EXCLUDED.is_default
+      RETURNING *
+    `
+    return row
+  },
+  delete: async (id: string): Promise<void> => {
+    await ensureDb()
+    await sql`UPDATE content_categories SET is_active = false WHERE id = ${id}`
+  },
+}
+
+// ─── GCP Credentials ──────────────────────────────────────────────────────────
+
+export interface GcpCredential {
+  id: string; name: string; project_id: string; bucket: string
+  sa_json: string; is_active: boolean; created_at: string
+}
+
+export const gcpCredentialsDb = {
+  getAll: async (): Promise<Omit<GcpCredential, 'sa_json'>[]> => {
+    await ensureDb()
+    return sql<Omit<GcpCredential, 'sa_json'>[]>`SELECT id, name, project_id, bucket, is_active, created_at FROM gcp_credentials WHERE is_active = true ORDER BY created_at`
+  },
+  get: async (id: string): Promise<GcpCredential | null> => {
+    await ensureDb()
+    const [row] = await sql<GcpCredential[]>`SELECT * FROM gcp_credentials WHERE id = ${id}`
+    return row ?? null
+  },
+  create: async (cred: Omit<GcpCredential, 'created_at' | 'is_active'>): Promise<void> => {
+    await ensureDb()
+    await sql`
+      INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json)
+      VALUES (${cred.id}, ${cred.name}, ${cred.project_id}, ${cred.bucket}, ${cred.sa_json})
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project_id = EXCLUDED.project_id,
+        bucket = EXCLUDED.bucket, sa_json = EXCLUDED.sa_json
+    `
+  },
+  delete: async (id: string): Promise<void> => {
+    await ensureDb()
+    await sql`UPDATE gcp_credentials SET is_active = false WHERE id = ${id}`
+  },
+}
+
+// ─── Scheduled Posts ──────────────────────────────────────────────────────────
+
+export interface ScheduledPost {
+  id: number; story_id: string; channel_id: string; platform: string
+  scheduled_at: string; status: string; posted_at: string | null
+  result_url: string; error: string; created_at: string
+}
+
+export const scheduledPostsDb = {
+  create: async (post: Pick<ScheduledPost, 'story_id' | 'channel_id' | 'platform' | 'scheduled_at'>): Promise<ScheduledPost> => {
+    await ensureDb()
+    const [row] = await sql<ScheduledPost[]>`
+      INSERT INTO scheduled_posts (story_id, channel_id, platform, scheduled_at)
+      VALUES (${post.story_id}, ${post.channel_id}, ${post.platform}, ${post.scheduled_at})
+      RETURNING *
+    `
+    return row
+  },
+  getPending: async (): Promise<ScheduledPost[]> => {
+    await ensureDb()
+    return sql<ScheduledPost[]>`
+      SELECT * FROM scheduled_posts WHERE status = 'pending' AND scheduled_at <= NOW() ORDER BY scheduled_at ASC LIMIT 10
+    `
+  },
+  getByStory: async (storyId: string): Promise<ScheduledPost[]> => {
+    await ensureDb()
+    return sql<ScheduledPost[]>`SELECT * FROM scheduled_posts WHERE story_id = ${storyId} ORDER BY scheduled_at`
+  },
+  getUpcoming: async (limit = 20): Promise<ScheduledPost[]> => {
+    await ensureDb()
+    return sql<ScheduledPost[]>`
+      SELECT sp.*, s.topic FROM scheduled_posts sp
+      LEFT JOIN stories s ON sp.story_id = s.story_id
+      WHERE sp.status IN ('pending', 'failed')
+      ORDER BY sp.scheduled_at ASC LIMIT ${limit}
+    `
+  },
+  update: async (id: number, updates: Partial<ScheduledPost>): Promise<void> => {
+    await ensureDb()
+    if (updates.status !== undefined) await sql`UPDATE scheduled_posts SET status = ${updates.status} WHERE id = ${id}`
+    if (updates.result_url !== undefined) await sql`UPDATE scheduled_posts SET result_url = ${updates.result_url}, posted_at = NOW() WHERE id = ${id}`
+    if (updates.error !== undefined) await sql`UPDATE scheduled_posts SET error = ${updates.error} WHERE id = ${id}`
+  },
+  delete: async (id: number): Promise<void> => {
+    await ensureDb()
+    await sql`DELETE FROM scheduled_posts WHERE id = ${id}`
   },
 }
 

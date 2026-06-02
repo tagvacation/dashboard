@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { pipelineDb } from '@/lib/db'
 import { runPipeline } from '@/lib/pipeline/runner'
 
@@ -13,17 +13,17 @@ function generateStoryId() {
   return `story_${y}_${m}_${d}_${seq}`
 }
 
-export async function POST() {
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}))
+  const categoryId = body.category_id || undefined  // optional: specific category
+
   const storyId = generateStoryId()
   await pipelineDb.create(storyId)
 
-  // Start pipeline in background — don't await
-  runPipeline(storyId).catch(async (err) => {
+  runPipeline(storyId, categoryId).catch(async (err) => {
     console.error(`Pipeline ${storyId} crashed:`, err)
-    try {
-      await pipelineDb.setStep(storyId, 'failed', { error: String(err) })
-    } catch { /* ignore */ }
+    try { await pipelineDb.setStep(storyId, 'failed', { error: String(err) }) } catch { /* ignore */ }
   })
 
-  return NextResponse.json({ story_id: storyId, message: 'Pipeline started' })
+  return NextResponse.json({ story_id: storyId, category_id: categoryId || 'default', message: 'Pipeline started' })
 }

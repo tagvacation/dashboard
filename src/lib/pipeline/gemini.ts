@@ -173,10 +173,10 @@ async function getPrompt(key: keyof typeof DEFAULT_PROMPTS): Promise<string> {
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 
-export async function pickTopic(storyId: string): Promise<{ topic: string; theme: string; hook_idea: string }> {
-  const system = await getPrompt('topic_picker')
-  const user = `Generate a fresh Hindi moral story topic. story_id: ${storyId}
-Return JSON: { "topic": "...", "theme": "moral_karma|spiritual|family", "hook_idea": "..." }`
+export async function pickTopic(storyId: string, promptOverride?: string): Promise<{ topic: string; theme: string; hook_idea: string }> {
+  const system = promptOverride || await getPrompt('topic_picker')
+  const user = `Generate a fresh story topic. story_id: ${storyId}
+Return JSON: { "topic": "...", "theme": "string", "hook_idea": "..." }`
 
   const raw = await callGemini(system, user)
   const parsed = JSON.parse(raw)
@@ -216,8 +216,8 @@ const SCRIPT_JSON_EXAMPLE = `{
   "total_scenes": 10
 }`
 
-export async function writeScript(storyId: string, topic: string, theme: string): Promise<Script> {
-  const system = await getPrompt('script_writer')
+export async function writeScript(storyId: string, topic: string, theme: string, promptOverride?: string): Promise<Script> {
+  const system = promptOverride || await getPrompt('script_writer')
   const user = `story_id: ${storyId}
 theme: ${theme}
 topic: ${topic}
