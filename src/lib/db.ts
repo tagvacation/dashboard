@@ -51,6 +51,23 @@ async function createTables() {
       value TEXT
     )
   `
+  await sql`
+    CREATE TABLE IF NOT EXISTS stories (
+      story_id TEXT PRIMARY KEY,
+      topic TEXT DEFAULT '',
+      theme TEXT DEFAULT '',
+      status TEXT DEFAULT 'generating',
+      target_account TEXT DEFAULT 'primary',
+      scenes_count INTEGER DEFAULT 0,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      clips_generated_at TIMESTAMPTZ,
+      storage_path TEXT DEFAULT '',
+      audio_url TEXT DEFAULT '',
+      youtube_link TEXT DEFAULT '',
+      notes TEXT DEFAULT ''
+    )
+  `
 }
 
 export async function ensureDb(): Promise<void> {
@@ -161,5 +178,63 @@ export const pipelineDb = {
   delete: async (storyId: string): Promise<void> => {
     await ensureDb()
     await sql`DELETE FROM pipeline_runs WHERE story_id = ${storyId}`
+  },
+}
+
+// ─── Stories DB ───────────────────────────────────────────────────────────────
+
+export interface StoryRow {
+  story_id: string
+  topic: string
+  theme: string
+  status: string
+  target_account: string
+  scenes_count: number
+  created_at: string
+  updated_at: string
+  clips_generated_at: string | null
+  storage_path: string
+  audio_url: string
+  youtube_link: string
+  notes: string
+}
+
+export const storiesDb = {
+  create: async (s: Pick<StoryRow, 'story_id' | 'topic' | 'theme'>): Promise<void> => {
+    await ensureDb()
+    await sql`
+      INSERT INTO stories (story_id, topic, theme, storage_path)
+      VALUES (${s.story_id}, ${s.topic}, ${s.theme}, ${`stories/${s.story_id}/`})
+      ON CONFLICT (story_id) DO NOTHING
+    `
+  },
+
+  get: async (storyId: string): Promise<StoryRow | null> => {
+    await ensureDb()
+    const [row] = await sql<StoryRow[]>`SELECT * FROM stories WHERE story_id = ${storyId}`
+    return row ?? null
+  },
+
+  getAll: async (): Promise<StoryRow[]> => {
+    await ensureDb()
+    return sql<StoryRow[]>`SELECT * FROM stories ORDER BY created_at DESC`
+  },
+
+  update: async (storyId: string, updates: Partial<Omit<StoryRow, 'story_id' | 'created_at'>>): Promise<void> => {
+    await ensureDb()
+    const now = new Date().toISOString()
+    if (updates.status !== undefined) await sql`UPDATE stories SET status = ${updates.status}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.topic !== undefined) await sql`UPDATE stories SET topic = ${updates.topic}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.scenes_count !== undefined) await sql`UPDATE stories SET scenes_count = ${updates.scenes_count}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.audio_url !== undefined) await sql`UPDATE stories SET audio_url = ${updates.audio_url}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.youtube_link !== undefined) await sql`UPDATE stories SET youtube_link = ${updates.youtube_link}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.notes !== undefined) await sql`UPDATE stories SET notes = ${updates.notes}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.clips_generated_at !== undefined) await sql`UPDATE stories SET clips_generated_at = ${updates.clips_generated_at ?? null}, updated_at = ${now} WHERE story_id = ${storyId}`
+    if (updates.storage_path !== undefined) await sql`UPDATE stories SET storage_path = ${updates.storage_path}, updated_at = ${now} WHERE story_id = ${storyId}`
+  },
+
+  delete: async (storyId: string): Promise<void> => {
+    await ensureDb()
+    await sql`DELETE FROM stories WHERE story_id = ${storyId}`
   },
 }

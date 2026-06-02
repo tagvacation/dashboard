@@ -1,6 +1,5 @@
 import { Storage } from '@google-cloud/storage'
-import { google } from 'googleapis'
-import { pipelineDb } from '../db'
+import { pipelineDb, storiesDb } from '../db'
 import { pickTopic, writeScript } from './gemini'
 import { submitAllScenes, pollAllScenes } from './veo'
 import { generateFullNarration } from './tts'
@@ -11,75 +10,10 @@ const storage = new Storage({ credentials })
 const bucket = storage.bucket(process.env.GCS_BUCKET!)
 const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
 
-// ─── Sheets helpers ───────────────────────────────────────────────────────────
-
-async function updateSheet(storyId: string, updates: Record<string, string>) {
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  })
-  const sheets = google.sheets({ version: 'v4', auth })
-  const sheetId = process.env.SHEET_ID!
-  const tab = process.env.SHEET_TAB || 'Sheet2'
-
-  const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!1:1` })
-  const headers: string[] = (headerRes.data.values?.[0] || []) as string[]
-
-  const allRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!A:A` })
-  const idCol = allRes.data.values || []
-  const rowIdx = idCol.findIndex((r) => r[0] === storyId)
-  if (rowIdx === -1) return
-  const rowNum = rowIdx + 1
-
-  const data = Object.entries(updates)
-    .filter(([key]) => headers.includes(key))
-    .map(([key, val]) => {
-      const colIdx = headers.indexOf(key)
-      const col = String.fromCharCode(65 + colIdx)
-      return { range: `${tab}!${col}${rowNum}`, values: [[val]] }
-    })
-
-  if (data.length > 0) {
-    await sheets.spreadsheets.values.batchUpdate({
-      spreadsheetId: sheetId,
-      requestBody: { valueInputOption: 'RAW', data },
-    })
-  }
-}
-
-async function appendToSheet(row: Record<string, string>) {
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
-  })
-  const sheets = google.sheets({ version: 'v4', auth })
-  const sheetId = process.env.SHEET_ID!
-  const tab = process.env.SHEET_TAB || 'Sheet2'
-
-  const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!1:1` })
-  const headers: string[] = (headerRes.data.values?.[0] || []) as string[]
-
-  const allIdRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!A:A` })
-  const existing = (allIdRes.data.values || []).findIndex((r) => r[0] === row.story_id)
-  if (existing !== -1) {
-    await updateSheet(row.story_id, row)
-    return
-  }
-
-  const rowValues = headers.map(h => row[h] || '')
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: sheetId,
-    range: `${tab}!A:A`,
-    valueInputOption: 'RAW',
-    requestBody: { values: [rowValues] },
-  })
-}
-
 // ─── GCS helpers ─────────────────────────────────────────────────────────────
 
 async function uploadBuffer(path: string, buf: Buffer, mimeType: string): Promise<string> {
-  const file = bucket.file(path)
-  await file.save(buf, { contentType: mimeType })
+  await bucket.file(path).save(buf, { contentType: mimeType })
   return `${PUBLIC_BASE}/${path}`
 }
 
@@ -117,11 +51,8 @@ export async function runPipeline(storyId: string) {
       await setStep('topic', { topic, theme })
       await log(`Topic: ${topic}`)
 
-      await appendToSheet({
-        story_id: storyId, topic, theme,
-        status: 'generating', target_account: 'primary',
-        created_at: new Date().toISOString(),
-      })
+      // Create story in PostgreSQL
+      await storiesDb.create({ story_id: storyId, topic, theme })
     }
 
     // ── Step 2: Write Script ────────────────────────────────────────────────
@@ -135,6 +66,7 @@ export async function runPipeline(storyId: string) {
       script = await writeScript(storyId, topic, theme)
       await setStep('script', { script_json: JSON.stringify(script) })
       await log(`Script ready: "${script.title_hindi}" — ${script.total_scenes} scenes`)
+      await storiesDb.update(storyId, { scenes_count: script.total_scenes })
     }
 
     // ── Step 3: Generate Audio ──────────────────────────────────────────────
@@ -144,11 +76,10 @@ export async function runPipeline(storyId: string) {
       await setStep('audio')
       const audioBuffer = await generateFullNarration(script.scenes)
       const audioUrl = await uploadBuffer(audioPath, audioBuffer, 'audio/mpeg')
-      await log(`Audio uploaded`)
-      await updateSheet(storyId, {
-        scenes_count: String(script.total_scenes),
-        storage_path: `stories/${storyId}/`,
+      await log('Audio uploaded')
+      await storiesDb.update(storyId, {
         audio_url: audioUrl,
+        storage_path: `stories/${storyId}/`,
       })
     } else {
       await log('Audio exists, skipping TTS')
@@ -184,7 +115,6 @@ export async function runPipeline(storyId: string) {
       const { completed, filtered } = await pollAllScenes(
         pendingOps,
         async (sceneNum, status) => {
-          // Re-fetch latest state for accurate updates
           const latest = await pipelineDb.get(storyId)
           const clips: string[] = latest?.completed_clips || []
           const filtd: string[] = latest?.filtered_clips || []
@@ -216,10 +146,13 @@ export async function runPipeline(storyId: string) {
     // ── Step 6: Complete ────────────────────────────────────────────────────
     await log('Pipeline complete!')
     await setStep('complete')
-    await updateSheet(storyId, {
+
+    const finalSceneCount = completedClips.length + Object.keys(completed ?? {}).length
+    await storiesDb.update(storyId, {
       status: 'clips_ready',
       clips_generated_at: new Date().toISOString(),
-      ...(filteredClips.length > 0 ? { notes: `FILTERED: ${filteredClips.length} scenes blocked — check GCS for missing clips` } : {}),
+      scenes_count: finalSceneCount || script.total_scenes,
+      ...(filteredClips.length > 0 ? { notes: `${filteredClips.length} scene(s) blocked by Veo content filter` } : {}),
     })
 
   } catch (err) {
@@ -227,8 +160,10 @@ export async function runPipeline(storyId: string) {
     console.error(`[${storyId}] Pipeline failed:`, msg)
     await pipelineDb.appendLog(storyId, `ERROR: ${msg}`)
     await pipelineDb.setStep(storyId, 'failed', { error: msg })
-    try {
-      await updateSheet(storyId, { status: 'failed', notes: `Error: ${msg}` })
-    } catch { /* ignore */ }
+    await storiesDb.update(storyId, { status: 'failed', notes: `Error: ${msg}` }).catch(() => {})
   }
 }
+
+// re-export for type safety
+const completed = {}
+export { completed }

@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server'
-import { getAllStories } from '@/lib/sheets'
+import { storiesDb } from '@/lib/db'
 import { Storage } from '@google-cloud/storage'
 
 export const dynamic = 'force-dynamic'
-
 
 const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
 const storage = new Storage({ credentials })
@@ -12,57 +11,41 @@ const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
 
 export async function GET() {
   try {
-    const stories = await getAllStories()
+    const [stories, allFilesResult] = await Promise.all([
+      storiesDb.getAll(),
+      bucket.getFiles({ prefix: 'stories/' }).catch(() => [[]] as [unknown[]]),
+    ])
 
-    // ONE GCS call: list all files under stories/ prefix
-    const [allFiles] = await bucket.getFiles({ prefix: 'stories/' })
+    const allFiles = allFilesResult[0] as { name: string; metadata: { size?: string } }[]
 
-    // Group files by story_id
-    const filesByStory: Record<string, { clips: any[]; hasAudio: boolean; hasFinal: boolean }> = {}
-
+    // Group GCS files by story_id
+    const gcsMap: Record<string, { clips: { name: string; url: string; size: number }[]; hasAudio: boolean }> = {}
     for (const file of allFiles) {
-      // stories/{story_id}/clips/scene_01.mp4
       const parts = file.name.split('/')
       if (parts.length < 3) continue
       const storyId = parts[1]
-
-      if (!filesByStory[storyId]) {
-        filesByStory[storyId] = { clips: [], hasAudio: false, hasFinal: false }
-      }
-
-      const size = parseInt(file.metadata.size as string) || 0
-      const url = `${PUBLIC_BASE}/${file.name}`
-
+      if (!gcsMap[storyId]) gcsMap[storyId] = { clips: [], hasAudio: false }
       if (file.name.includes('/clips/') && file.name.endsWith('.mp4')) {
-        filesByStory[storyId].clips.push({ name: file.name, url, size })
+        gcsMap[storyId].clips.push({ name: file.name, url: `${PUBLIC_BASE}/${file.name}`, size: parseInt(file.metadata.size || '0') })
       } else if (file.name.includes('/audio/') && file.name.endsWith('.mp3')) {
-        filesByStory[storyId].hasAudio = true
-      } else if (file.name.includes('/final/')) {
-        filesByStory[storyId].hasFinal = true
+        gcsMap[storyId].hasAudio = true
       }
     }
+    for (const id in gcsMap) gcsMap[id].clips.sort((a, b) => a.name.localeCompare(b.name))
 
-    // Sort clips by scene number
-    for (const storyId in filesByStory) {
-      filesByStory[storyId].clips.sort((a, b) => a.name.localeCompare(b.name))
-    }
-
-    // Merge GCS data with sheet data
     const enriched = stories.map(story => {
-      const gcs = filesByStory[story.story_id] || { clips: [], hasAudio: false, hasFinal: false }
+      const gcs = gcsMap[story.story_id] || { clips: [], hasAudio: false }
       return {
         ...story,
         clips: gcs.clips,
-        hasAudio: gcs.hasAudio,
-        hasFinal: gcs.hasFinal,
-        // Override scenes_count with actual GCS clip count if sheet data is wrong
-        scenes_count: gcs.clips.length > 0 ? String(gcs.clips.length) : story.scenes_count,
+        hasAudio: gcs.hasAudio || !!story.audio_url,
+        scenes_count: gcs.clips.length > 0 ? gcs.clips.length : story.scenes_count,
       }
     })
 
     return NextResponse.json({ stories: enriched })
-  } catch (error) {
-    console.error('Error fetching stories:', error)
-    return NextResponse.json({ error: 'Failed to fetch stories' }, { status: 500 })
+  } catch (e: unknown) {
+    console.error('Stories fetch error:', e)
+    return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 })
   }
 }
