@@ -43,7 +43,7 @@ const STEP_LABELS: Record<string, { label: string; emoji: string }> = {
 // ─── Root ──────────────────────────────────────────────────────────────────────
 
 export default function Dashboard() {
-  const [tab, setTab] = useState<'stories' | 'generate' | 'analytics' | 'prompts'>('stories')
+  const [tab, setTab] = useState<'stories' | 'generate' | 'analytics' | 'settings'>('generate')
   const [stories, setStories] = useState<Story[]>([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState<Story | null>(null)
@@ -93,7 +93,7 @@ export default function Dashboard() {
             { key: 'generate',  label: '✨ Generate' },
             { key: 'stories',   label: '📚 Stories'  },
             { key: 'analytics', label: '📊 Analytics' },
-            { key: 'prompts',   label: '🎯 Prompts'  },
+            { key: 'settings',  label: '⚙️ Settings'  },
           ].map(t => (
             <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
               className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${tab === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
@@ -218,10 +218,10 @@ export default function Dashboard() {
           </div>
         )}
 
-        {/* Prompts Tab */}
-        {tab === 'prompts' && (
+        {/* Settings Tab */}
+        {tab === 'settings' && (
           <div className="h-full overflow-y-auto p-4 md:p-6">
-            <PromptsView />
+            <SettingsView />
           </div>
         )}
       </div>
@@ -232,7 +232,7 @@ export default function Dashboard() {
           { key: 'generate',  label: 'Generate',  icon: '✨' },
           { key: 'stories',   label: 'Stories',   icon: '📚' },
           { key: 'analytics', label: 'Analytics', icon: '📊' },
-          { key: 'prompts',   label: 'Prompts',   icon: '🎯' },
+          { key: 'settings',  label: 'Settings',  icon: '⚙️' },
         ].map(t => (
           <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
             className={`flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors ${tab === t.key ? 'text-indigo-600' : 'text-gray-400'}`}>
@@ -248,14 +248,30 @@ export default function Dashboard() {
 
 // ─── Generate View ─────────────────────────────────────────────────────────────
 
+interface Category {
+  id: string; name: string; emoji: string; description: string
+  perspective: string; is_default: boolean
+  scene_count_min: number; scene_count_max: number
+}
+
 function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; stories: Story[] }) {
   const [runs, setRuns] = useState<PipelineRun[]>([])
   const [activeRun, setActiveRun] = useState<PipelineRun | null>(null)
   const [starting, setStarting] = useState(false)
   const [expandedLog, setExpandedLog] = useState(false)
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
+  const [categories, setCategories] = useState<Category[]>([])
+  const [selectedCat, setSelectedCat] = useState<string>('kathakar')
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    fetch('/api/categories').then(r => r.json()).then(d => {
+      setCategories(d.categories || [])
+      const def = (d.categories || []).find((c: Category) => c.is_default)
+      if (def) setSelectedCat(def.id)
+    })
+  }, [])
 
   const loadRuns = async () => {
     const res = await fetch('/api/pipeline')
@@ -295,7 +311,11 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
 
   const startGeneration = async () => {
     setStarting(true)
-    const res = await fetch('/api/pipeline/run', { method: 'POST' })
+    const res = await fetch('/api/pipeline/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ category_id: selectedCat }),
+    })
     const data = await res.json()
     setStarting(false)
     await fetchRunDetail(data.story_id)
@@ -333,9 +353,35 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
             ${starting || isRunning ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-700 text-white'}`}>
           {starting ? (
             <><svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Starting...</>
-          ) : isRunning ? '🎬 Running...' : '+ New Story'}
+          ) : isRunning ? '🎬 Running...' : `+ Generate ${categories.find(c => c.id === selectedCat)?.emoji || '✨'}`}
         </button>
       </div>
+
+      {/* ── Category Picker ── */}
+      {categories.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Content Type</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            {categories.map(cat => (
+              <button key={cat.id} onClick={() => setSelectedCat(cat.id)}
+                className={`p-3 rounded-xl border-2 text-left transition-all ${selectedCat === cat.id ? 'border-indigo-500 bg-indigo-50' : 'border-gray-100 bg-white hover:border-gray-200'}`}>
+                <div className="text-xl mb-1">{cat.emoji}</div>
+                <p className={`text-xs font-semibold ${selectedCat === cat.id ? 'text-indigo-700' : 'text-gray-700'}`}>{cat.name}</p>
+                <p className="text-xs text-gray-400 mt-0.5 line-clamp-1">{cat.description}</p>
+                <div className="mt-1.5">
+                  <span className={`text-xs px-1.5 py-0.5 rounded-md font-medium ${
+                    cat.perspective === 'first_person' ? 'bg-purple-50 text-purple-600' :
+                    cat.perspective === 'character' ? 'bg-orange-50 text-orange-600' :
+                    'bg-gray-50 text-gray-500'
+                  }`}>
+                    {cat.perspective === 'first_person' ? '1st person' : cat.perspective === 'character' ? 'character' : '3rd person'}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Quick Stats ── */}
       <div className="grid grid-cols-4 gap-3">
@@ -1021,128 +1067,406 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   )
 }
 
-// ─── Prompts View ──────────────────────────────────────────────────────────────
+// ─── Settings View ─────────────────────────────────────────────────────────────
 
-const PROMPT_META = [
-  {
-    key: 'topic_picker',
-    label: '🎯 Topic Picker',
-    desc: 'AI Agent 1 — picks today\'s story topic. Change niche, theme distribution, or topic rules here.',
-  },
-  {
-    key: 'script_writer',
-    label: '✍️ Script Writer',
-    desc: 'AI Agent 2 — writes the full script with scenes, character anchors, Veo prompts, Hindi TTS. Most important prompt.',
-  },
-  {
-    key: 'scene_rewrite',
-    label: '🔄 Scene Rewrite',
-    desc: 'Used when Veo rejects a scene. Rewrites the video prompt to pass content filters while keeping story continuity.',
-  },
-] as const
+function SettingsView() {
+  const [sub, setSub] = useState<'categories' | 'credentials' | 'prompts' | 'schedule'>('categories')
 
-function PromptsView() {
+  const TABS = [
+    { key: 'categories',  label: '🎬 Content Types' },
+    { key: 'credentials', label: '🔑 GCP Credentials' },
+    { key: 'prompts',     label: '🎯 Default Prompts' },
+    { key: 'schedule',    label: '📅 Schedule' },
+  ] as const
+
+  return (
+    <div className="max-w-3xl mx-auto w-full pb-8 space-y-4">
+      <div>
+        <h1 className="text-lg font-bold text-gray-900">⚙️ Settings</h1>
+        <p className="text-xs text-gray-400 mt-0.5">Manage content types, GCP accounts, AI prompts, and post scheduling</p>
+      </div>
+
+      {/* Sub-nav */}
+      <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+        {TABS.map(t => (
+          <button key={t.key} onClick={() => setSub(t.key as typeof sub)}
+            className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sub === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === 'categories'  && <CategoriesSettings />}
+      {sub === 'credentials' && <CredentialsSettings />}
+      {sub === 'prompts'     && <PromptsSettings />}
+      {sub === 'schedule'    && <ScheduleSettings />}
+    </div>
+  )
+}
+
+// ── Categories Settings ──────────────────────────────────────────────────────
+
+function CategoriesSettings() {
+  const [categories, setCategories] = useState<Category[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [editing, setEditing] = useState<Category | null>(null)
+  const [form, setForm] = useState({ id: '', name: '', emoji: '🎬', description: '', perspective: 'third_person', scene_count_min: 8, scene_count_max: 10, is_default: false })
+  const [saving, setSaving] = useState(false)
+
+  const load = async () => {
+    const d = await fetch('/api/categories').then(r => r.json())
+    setCategories(d.categories || [])
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const save = async () => {
+    setSaving(true)
+    await fetch('/api/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    await load(); setShowForm(false); setSaving(false)
+    setForm({ id: '', name: '', emoji: '🎬', description: '', perspective: 'third_person', scene_count_min: 8, scene_count_max: 10, is_default: false })
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading...</div>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-500">Content types with their own prompts, perspective, and Veo style.</p>
+        <button onClick={() => setShowForm(s => !s)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold">
+          + New Type
+        </button>
+      </div>
+
+      {/* Add form */}
+      {showForm && (
+        <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 space-y-3">
+          <p className="text-sm font-semibold text-indigo-800">New Content Type</p>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={form.emoji} onChange={e => setForm(f => ({...f, emoji: e.target.value}))} placeholder="Emoji" maxLength={4}
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 col-span-1" />
+            <input value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Name *"
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400" />
+          </div>
+          <input value={form.id} onChange={e => setForm(f => ({...f, id: e.target.value}))} placeholder="ID (snake_case) *"
+            className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+          <textarea value={form.description} onChange={e => setForm(f => ({...f, description: e.target.value}))} placeholder="Description"
+            rows={2} className="w-full px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 resize-none" />
+          <div className="grid grid-cols-3 gap-2">
+            <select value={form.perspective} onChange={e => setForm(f => ({...f, perspective: e.target.value}))}
+              className="px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none col-span-1">
+              <option value="third_person">3rd Person</option>
+              <option value="first_person">1st Person</option>
+              <option value="character">Character POV</option>
+            </select>
+            <input type="number" value={form.scene_count_min} onChange={e => setForm(f => ({...f, scene_count_min: +e.target.value}))} placeholder="Min scenes"
+              className="px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none" />
+            <input type="number" value={form.scene_count_max} onChange={e => setForm(f => ({...f, scene_count_max: +e.target.value}))} placeholder="Max scenes"
+              className="px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none" />
+          </div>
+          <p className="text-xs text-gray-400">💡 Leave prompts empty to use global defaults from Prompts tab. You can edit category-specific prompts after saving.</p>
+          <div className="flex gap-2">
+            <button onClick={save} disabled={saving || !form.id || !form.name}
+              className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
+              {saving ? 'Saving...' : 'Create Content Type'}
+            </button>
+            <button onClick={() => setShowForm(false)} className="px-4 py-2 bg-white border border-gray-200 text-gray-500 rounded-xl text-xs">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* Category cards */}
+      <div className="grid grid-cols-2 gap-3">
+        {categories.map(cat => (
+          <div key={cat.id} className={`bg-white rounded-2xl border p-4 ${cat.is_default ? 'border-indigo-200 bg-indigo-50/30' : 'border-gray-100'}`}>
+            <div className="flex items-start justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <span className="text-2xl">{cat.emoji}</span>
+                <div>
+                  <p className="text-sm font-semibold text-gray-800">{cat.name}</p>
+                  {cat.is_default && <span className="text-xs text-indigo-600 font-medium">Default</span>}
+                </div>
+              </div>
+            </div>
+            <p className="text-xs text-gray-500 mb-2 line-clamp-2">{cat.description}</p>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                cat.perspective === 'first_person' ? 'bg-purple-50 text-purple-600' :
+                cat.perspective === 'character' ? 'bg-orange-50 text-orange-600' :
+                'bg-gray-50 text-gray-500'}`}>
+                {cat.perspective === 'first_person' ? '1st person' : cat.perspective === 'character' ? 'character' : '3rd person'}
+              </span>
+              <span className="text-xs text-gray-400">{cat.scene_count_min}–{cat.scene_count_max} scenes</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Credentials Settings ─────────────────────────────────────────────────────
+
+function CredentialsSettings() {
+  const [creds, setCreds] = useState<{ id: string; name: string; project_id: string; bucket: string; is_active: boolean }[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ id: '', name: '', project_id: '', bucket: '', sa_json: '' })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    const d = await fetch('/api/credentials').then(r => r.json())
+    setCreds(d.credentials || [])
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const json = JSON.parse(ev.target?.result as string)
+        setForm(f => ({
+          ...f,
+          sa_json: ev.target?.result as string,
+          project_id: json.project_id || f.project_id,
+          id: f.id || `account_${Date.now()}`,
+          name: f.name || `${json.project_id || 'GCP Account'}`,
+        }))
+        setError('')
+      } catch { setError('Invalid JSON file') }
+    }
+    reader.readAsText(file)
+  }
+
+  const save = async () => {
+    setSaving(true); setError('')
+    const res = await fetch('/api/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const data = await res.json()
+    if (!res.ok) { setError(data.error); setSaving(false); return }
+    await load(); setShowForm(false); setSaving(false)
+    setForm({ id: '', name: '', project_id: '', bucket: '', sa_json: '' })
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading...</div>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-500">Multiple Vertex AI accounts for Veo video generation and TTS.</p>
+        <button onClick={() => setShowForm(s => !s)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold">
+          + Add Account
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-3">
+          <p className="text-sm font-semibold text-gray-800">Add GCP Account</p>
+
+          {/* SA JSON file upload */}
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">Upload Service Account JSON key file:</p>
+            <label className="flex items-center gap-3 px-4 py-3 border-2 border-dashed border-gray-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-colors">
+              <span className="text-2xl">📂</span>
+              <div>
+                <p className="text-xs font-medium text-gray-700">Click to upload SA JSON</p>
+                <p className="text-xs text-gray-400">{form.sa_json ? '✅ File loaded — fields auto-filled below' : 'credentials.json from GCP Console'}</p>
+              </div>
+              <input type="file" accept=".json" className="hidden" onChange={handleFileUpload} />
+            </label>
+          </div>
+
+          {error && <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</p>}
+
+          <div className="grid grid-cols-2 gap-2">
+            <input value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Account name *"
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400" />
+            <input value={form.id} onChange={e => setForm(f => ({...f, id: e.target.value}))} placeholder="ID (e.g. account_b)"
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <input value={form.project_id} onChange={e => setForm(f => ({...f, project_id: e.target.value}))} placeholder="GCP Project ID *"
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            <input value={form.bucket} onChange={e => setForm(f => ({...f, bucket: e.target.value}))} placeholder="GCS Bucket name *"
+              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={save} disabled={saving || !form.name || !form.project_id || !form.bucket || !form.sa_json}
+              className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
+              {saving ? 'Saving...' : 'Add Credential'}
+            </button>
+            <button onClick={() => { setShowForm(false); setError('') }} className="px-4 py-2 bg-white border border-gray-200 text-gray-500 rounded-xl text-xs">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {creds.map(cred => (
+          <div key={cred.id} className={`bg-white rounded-2xl border p-4 flex items-center gap-3 ${cred.id === 'default' ? 'border-emerald-200' : 'border-gray-100'}`}>
+            <div className="w-9 h-9 bg-blue-50 rounded-xl flex items-center justify-center text-lg shrink-0">🔑</div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-semibold text-gray-800">{cred.name}</p>
+                {cred.id === 'default' && <span className="text-xs px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded-full font-medium">Active (env)</span>}
+              </div>
+              <p className="text-xs text-gray-400 font-mono">{cred.project_id} · {cred.bucket}</p>
+            </div>
+            {cred.id !== 'default' && (
+              <button onClick={async () => {
+                if (!confirm(`Delete ${cred.name}?`)) return
+                await fetch('/api/credentials', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: cred.id }) })
+                load()
+              }} className="text-xs text-red-400 hover:text-red-600 transition-colors">Delete</button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Prompts Settings ─────────────────────────────────────────────────────────
+
+function PromptsSettings() {
   const [prompts, setPrompts] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [resetting, setResetting] = useState(false)
   const [expandedKey, setExpandedKey] = useState<string | null>('topic_picker')
 
   useEffect(() => {
-    fetch('/api/prompts').then(r => r.json()).then(d => {
-      setPrompts(d)
-      setLoading(false)
-    })
+    fetch('/api/prompts').then(r => r.json()).then(d => { setPrompts(d); setLoading(false) })
   }, [])
 
   const savePrompts = async () => {
     setSaving(true); setSaved(false)
     await fetch('/api/prompts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(prompts) })
-    setSaving(false); setSaved(true)
-    setTimeout(() => setSaved(false), 2000)
+    setSaving(false); setSaved(true); setTimeout(() => setSaved(false), 2000)
   }
 
-  const resetToDefaults = async () => {
-    if (!confirm('Reset all prompts to built-in defaults?')) return
-    setResetting(true)
-    await fetch('/api/prompts', { method: 'DELETE' })
-    const res = await fetch('/api/prompts')
-    setPrompts(await res.json())
-    setResetting(false)
-  }
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading prompts...</div>
 
-  if (loading) return <div className="text-center py-12 text-gray-400 animate-pulse">Loading prompts...</div>
+  const PROMPT_META = [
+    { key: 'topic_picker',  label: '🎯 Topic Picker',  desc: 'AI Agent 1 — picks daily story topic. Change niche, themes.' },
+    { key: 'script_writer', label: '✍️ Script Writer',  desc: 'AI Agent 2 — writes full script: scenes, anchors, Veo prompts, TTS.' },
+    { key: 'scene_rewrite', label: '🔄 Scene Rewrite',  desc: 'Rewrites Veo-rejected prompts to pass content filters.' },
+  ] as const
 
   return (
-    <div className="max-w-3xl mx-auto w-full pb-8 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold text-gray-900">🎯 AI Prompts</h1>
-          <p className="text-xs text-gray-400 mt-0.5">Edit prompts to change content style, niche, or language. Stored in PostgreSQL.</p>
-        </div>
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-500">Global default prompts. Content types can override these individually.</p>
         <div className="flex gap-2">
-          <button onClick={resetToDefaults} disabled={resetting}
-            className="px-3 py-2 text-xs text-gray-500 hover:bg-gray-100 rounded-xl transition-colors disabled:opacity-50">
-            {resetting ? 'Resetting...' : '↺ Reset defaults'}
-          </button>
+          <button onClick={async () => { if (!confirm('Reset to defaults?')) return; await fetch('/api/prompts', { method: 'DELETE' }); const d = await fetch('/api/prompts').then(r => r.json()); setPrompts(d) }}
+            className="px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded-xl">↺ Reset</button>
           <button onClick={savePrompts} disabled={saving}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50'}`}>
-            {saving ? 'Saving...' : saved ? '✓ Saved!' : 'Save Changes'}
+            className={`px-4 py-1.5 rounded-xl text-xs font-semibold ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50'}`}>
+            {saving ? '...' : saved ? '✓ Saved' : 'Save All'}
           </button>
         </div>
       </div>
-
-      {/* Usage hint */}
-      <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-xs text-blue-700">
-        <span className="font-semibold">Tip:</span> To create a different type of content (e.g. motivational quotes, devotional stories, comedy), just change the Topic Picker and Script Writer prompts. No code changes needed.
-      </div>
-
-      {/* Prompt editors */}
       {PROMPT_META.map(({ key, label, desc }) => (
-        <div key={key} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+        <div key={key} className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
           <button onClick={() => setExpandedKey(expandedKey === key ? null : key)}
-            className="w-full px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50 transition-colors">
+            className="w-full px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50">
             <div className="text-left">
               <p className="text-sm font-semibold text-gray-800">{label}</p>
-              <p className="text-xs text-gray-400 mt-0.5">{desc}</p>
+              <p className="text-xs text-gray-400">{desc}</p>
             </div>
-            <div className="shrink-0 flex items-center gap-3">
+            <div className="flex items-center gap-3 shrink-0">
               <span className="text-xs text-gray-300">{(prompts[key] || '').length.toLocaleString()} chars</span>
               <span className="text-gray-300">{expandedKey === key ? '▲' : '▼'}</span>
             </div>
           </button>
-
           {expandedKey === key && (
             <div className="border-t border-gray-100">
-              <textarea
-                value={prompts[key] || ''}
-                onChange={e => setPrompts(p => ({ ...p, [key]: e.target.value }))}
-                rows={20}
-                spellCheck={false}
-                className="w-full px-4 py-3 text-xs font-mono bg-gray-950 text-gray-200 focus:outline-none resize-y leading-relaxed"
-                placeholder="Loading..."
-              />
-              <div className="px-4 py-2 bg-gray-900 flex items-center justify-between">
-                <span className="text-xs text-gray-500 font-mono">{(prompts[key] || '').length} chars · {(prompts[key] || '').split('\n').length} lines</span>
-                <button onClick={() => setPrompts(p => ({ ...p, [key]: '' }))}
-                  className="text-xs text-gray-600 hover:text-red-400 transition-colors">
-                  Clear
-                </button>
+              <textarea value={prompts[key] || ''} onChange={e => setPrompts(p => ({...p, [key]: e.target.value}))}
+                rows={18} spellCheck={false}
+                className="w-full px-4 py-3 text-xs font-mono bg-gray-950 text-gray-200 focus:outline-none resize-y leading-relaxed" />
+              <div className="px-4 py-2 bg-gray-900 flex justify-between">
+                <span className="text-xs text-gray-500 font-mono">{(prompts[key] || '').split('\n').length} lines</span>
+                <button onClick={() => setPrompts(p => ({...p, [key]: ''}))} className="text-xs text-gray-600 hover:text-red-400">Clear</button>
               </div>
             </div>
           )}
         </div>
       ))}
+    </div>
+  )
+}
 
-      {/* Save reminder */}
-      <div className="flex justify-end">
-        <button onClick={savePrompts} disabled={saving}
-          className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${saved ? 'bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50'}`}>
-          {saving ? 'Saving...' : saved ? '✓ All changes saved!' : '💾 Save All Changes'}
-        </button>
+// ── Schedule Settings ────────────────────────────────────────────────────────
+
+function ScheduleSettings() {
+  const [posts, setPosts] = useState<{ id: number; story_id: string; platform: string; scheduled_at: string; status: string; result_url: string; error: string; topic?: string }[]>([])
+  const [loading, setLoading] = useState(true)
+  const [deleting, setDeleting] = useState<number | null>(null)
+
+  useEffect(() => {
+    fetch('/api/schedule').then(r => r.json()).then(d => { setPosts(d.posts || []); setLoading(false) })
+  }, [])
+
+  const remove = async (id: number) => {
+    setDeleting(id)
+    await fetch('/api/schedule', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) })
+    setPosts(p => p.filter(x => x.id !== id))
+    setDeleting(null)
+  }
+
+  const PLATFORM_ICON: Record<string, string> = { youtube: '▶', instagram: '📸', facebook: '👥' }
+  const STATUS_COLOR: Record<string, string> = {
+    pending: 'bg-amber-50 text-amber-700', posted: 'bg-emerald-50 text-emerald-700',
+    failed: 'bg-red-50 text-red-700', processing: 'bg-blue-50 text-blue-700',
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading schedule...</div>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-500">Scheduled posts. Cron runs every 5 min: <code className="bg-gray-100 px-1 rounded">POST /api/cron</code></p>
+        <a href="/api/cron" target="_blank" className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs font-medium">▶ Run now</a>
       </div>
+
+      {posts.length === 0 ? (
+        <div className="text-center py-12 text-gray-400">
+          <p className="text-4xl mb-2">📅</p>
+          <p className="text-sm">No scheduled posts</p>
+          <p className="text-xs mt-1">Schedule from any story's detail page</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {posts.map(post => (
+            <div key={post.id} className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0 ${post.platform === 'youtube' ? 'bg-red-50' : post.platform === 'instagram' ? 'bg-pink-50' : 'bg-blue-50'}`}>
+                {PLATFORM_ICON[post.platform] || '📤'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-800 font-medium truncate">{post.topic || post.story_id}</p>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-xs text-gray-400">
+                    {new Date(post.scheduled_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[post.status] || 'bg-gray-50 text-gray-500'}`}>
+                    {post.status}
+                  </span>
+                </div>
+                {post.result_url && <a href={post.result_url} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">{post.result_url}</a>}
+                {post.error && <p className="text-xs text-red-500 mt-0.5">{post.error}</p>}
+              </div>
+              {post.status === 'pending' && (
+                <button onClick={() => remove(post.id)} disabled={deleting === post.id}
+                  className="text-xs text-gray-400 hover:text-red-500 transition-colors shrink-0 disabled:opacity-50">
+                  {deleting === post.id ? '...' : 'Cancel'}
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -136,12 +136,15 @@ async function createTables() {
       storage_path TEXT DEFAULT '',
       audio_url TEXT DEFAULT '',
       youtube_link TEXT DEFAULT '',
-      notes TEXT DEFAULT '',
-      category_id TEXT DEFAULT 'kathakar',
-      channel_id TEXT DEFAULT 'default',
-      gcp_credential_id TEXT DEFAULT ''
+      notes TEXT DEFAULT ''
     )
   `
+
+  // Add new columns to existing stories table (safe: IF NOT EXISTS)
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS category_id TEXT DEFAULT 'kathakar'`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS channel_id TEXT DEFAULT 'default'`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS gcp_credential_id TEXT DEFAULT ''`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS youtube_link TEXT DEFAULT ''`
 }
 
 export async function ensureDb(): Promise<void> {
