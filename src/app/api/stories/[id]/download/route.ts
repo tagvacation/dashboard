@@ -3,8 +3,8 @@ import { listStoryFiles, getFileStream } from '@/lib/gcs'
 import archiver from 'archiver'
 import { PassThrough } from 'stream'
 
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const storyId = params.id
+export async function GET(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const { id: storyId } = await params
 
   try {
     const files = await listStoryFiles(storyId)

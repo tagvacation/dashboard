@@ -1,29 +1,61 @@
 import { NextResponse } from 'next/server'
 import { getAllStories } from '@/lib/sheets'
-import { listStoryFiles, PUBLIC_BASE } from '@/lib/gcs'
+import { Storage } from '@google-cloud/storage'
+
+const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
+const storage = new Storage({ credentials })
+const bucket = storage.bucket(process.env.GCS_BUCKET!)
+const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
 
 export async function GET() {
   try {
     const stories = await getAllStories()
 
-    // Enrich with GCS file info for clips_ready stories
-    const enriched = await Promise.all(
-      stories.map(async (story) => {
-        if (story.status !== 'clips_ready') return { ...story, clips: [], hasAudio: false }
+    // ONE GCS call: list all files under stories/ prefix
+    const [allFiles] = await bucket.getFiles({ prefix: 'stories/' })
 
-        try {
-          const files = await listStoryFiles(story.story_id)
-          const clips = files
-            .filter(f => f.type === 'video')
-            .sort((a, b) => a.name.localeCompare(b.name))
-          const hasAudio = files.some(f => f.type === 'audio')
+    // Group files by story_id
+    const filesByStory: Record<string, { clips: any[]; hasAudio: boolean; hasFinal: boolean }> = {}
 
-          return { ...story, clips, hasAudio }
-        } catch {
-          return { ...story, clips: [], hasAudio: false }
-        }
-      })
-    )
+    for (const file of allFiles) {
+      // stories/{story_id}/clips/scene_01.mp4
+      const parts = file.name.split('/')
+      if (parts.length < 3) continue
+      const storyId = parts[1]
+
+      if (!filesByStory[storyId]) {
+        filesByStory[storyId] = { clips: [], hasAudio: false, hasFinal: false }
+      }
+
+      const size = parseInt(file.metadata.size as string) || 0
+      const url = `${PUBLIC_BASE}/${file.name}`
+
+      if (file.name.includes('/clips/') && file.name.endsWith('.mp4')) {
+        filesByStory[storyId].clips.push({ name: file.name, url, size })
+      } else if (file.name.includes('/audio/') && file.name.endsWith('.mp3')) {
+        filesByStory[storyId].hasAudio = true
+      } else if (file.name.includes('/final/')) {
+        filesByStory[storyId].hasFinal = true
+      }
+    }
+
+    // Sort clips by scene number
+    for (const storyId in filesByStory) {
+      filesByStory[storyId].clips.sort((a, b) => a.name.localeCompare(b.name))
+    }
+
+    // Merge GCS data with sheet data
+    const enriched = stories.map(story => {
+      const gcs = filesByStory[story.story_id] || { clips: [], hasAudio: false, hasFinal: false }
+      return {
+        ...story,
+        clips: gcs.clips,
+        hasAudio: gcs.hasAudio,
+        hasFinal: gcs.hasFinal,
+        // Override scenes_count with actual GCS clip count if sheet data is wrong
+        scenes_count: gcs.clips.length > 0 ? String(gcs.clips.length) : story.scenes_count,
+      }
+    })
 
     return NextResponse.json({ stories: enriched })
   } catch (error) {
