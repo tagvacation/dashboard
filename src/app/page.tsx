@@ -42,6 +42,21 @@ const STEP_LABELS: Record<string, { label: string; emoji: string }> = {
 
 // ─── Root ──────────────────────────────────────────────────────────────────────
 
+const STATUS_COLORS: Record<string, { bar: string; badge: string; text: string }> = {
+  clips_ready:   { bar: 'bg-emerald-400', badge: 'bg-emerald-100 text-emerald-700', text: 'Ready' },
+  post_produced: { bar: 'bg-blue-400',    badge: 'bg-blue-100 text-blue-700',       text: 'Edited' },
+  published:     { bar: 'bg-violet-400',  badge: 'bg-violet-100 text-violet-700',   text: 'Live' },
+  generating:    { bar: 'bg-amber-400',   badge: 'bg-amber-100 text-amber-700',     text: 'Generating' },
+  failed:        { bar: 'bg-red-400',     badge: 'bg-red-100 text-red-600',         text: 'Failed' },
+}
+
+const NAV = [
+  { key: 'generate',  icon: '✦',  label: 'Generate'  },
+  { key: 'stories',   icon: '▤',  label: 'Stories'   },
+  { key: 'analytics', icon: '◎',  label: 'Analytics' },
+  { key: 'settings',  icon: '◈',  label: 'Settings'  },
+] as const
+
 export default function Dashboard() {
   const [tab, setTab] = useState<'stories' | 'generate' | 'analytics' | 'settings'>('generate')
   const [stories, setStories] = useState<Story[]>([])
@@ -63,181 +78,213 @@ export default function Dashboard() {
     !search || s.topic.toLowerCase().includes(search.toLowerCase()) || s.story_id.includes(search)
   )
 
-  const stats = {
-    total: stories.length,
-    ready: stories.filter(s => s.status === 'clips_ready').length,
-    published: stories.filter(s => s.status === 'published').length,
-  }
+  const navigate = (key: typeof tab) => { setTab(key); setMobileView('list') }
 
   return (
-    <div className="h-screen flex flex-col bg-gray-50 overflow-hidden">
+    <div className="h-screen flex overflow-hidden bg-[#F5F5F7]">
 
-      {/* ── Header ── */}
-      <header className="shrink-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
-        {mobileView === 'detail' && selected && tab === 'stories' ? (
-          <button onClick={() => setMobileView('list')} className="md:hidden p-1.5 -ml-1 text-gray-500 hover:text-gray-800">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-        ) : null}
+      {/* ══════════ DARK SIDEBAR ══════════ */}
+      <aside className="hidden md:flex flex-col w-56 shrink-0 bg-[#111111] text-white overflow-hidden">
 
-        <div className="flex items-center gap-2 shrink-0">
-          <img src="/logo_jpg.jpg" className="w-7 h-7 rounded-lg object-cover" alt="KathaKar" />
-          <span className="font-bold text-gray-900 text-sm tracking-tight">KathaKar</span>
+        {/* Logo */}
+        <div className="px-4 pt-5 pb-4 flex items-center gap-2.5 border-b border-white/10">
+          <img src="/logo_jpg.jpg" className="w-7 h-7 rounded-lg object-cover" alt="" />
+          <div>
+            <p className="text-sm font-bold tracking-tight">KathaKar</p>
+            <p className="text-xs text-white/30">AI Reel Studio</p>
+          </div>
         </div>
 
-        {/* Desktop nav */}
-        <nav className="hidden md:flex gap-0.5 bg-gray-100 rounded-lg p-1 ml-2">
-          {[
-            { key: 'generate',  label: '✨ Generate' },
-            { key: 'stories',   label: '📚 Stories'  },
-            { key: 'analytics', label: '📊 Analytics' },
-            { key: 'settings',  label: '⚙️ Settings'  },
-          ].map(t => (
-            <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
-              className={`px-3 py-1.5 rounded-md text-xs font-medium transition-all ${tab === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
-              {t.label}
+        {/* Nav */}
+        <nav className="px-2 py-3 space-y-0.5">
+          {NAV.map(n => (
+            <button key={n.key} onClick={() => navigate(n.key)}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left
+                ${tab === n.key
+                  ? 'bg-white/10 text-white'
+                  : 'text-white/40 hover:text-white/70 hover:bg-white/5'
+                }`}>
+              <span className="text-base leading-none w-4 text-center">{n.icon}</span>
+              {n.label}
             </button>
           ))}
         </nav>
 
-        {/* Stats */}
-        <div className="hidden md:flex gap-1.5 text-xs ml-1">
-          <span className="px-2 py-1 bg-gray-100 text-gray-500 rounded-full">{stats.total} total</span>
-          <span className="px-2 py-1 bg-emerald-50 text-emerald-700 rounded-full">{stats.ready} ready</span>
-          <span className="px-2 py-1 bg-purple-50 text-purple-700 rounded-full">{stats.published} live</span>
-        </div>
-
-        <div className="ml-auto flex gap-2">
-          <a href="/api/auth/youtube" className="hidden md:flex px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium transition-colors">▶ Connect YT</a>
-          <button onClick={loadStories}
-            className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-            title="Refresh">
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-          </button>
-          <button onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}
-            className="hidden md:block px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">
-            Logout
-          </button>
-        </div>
-      </header>
-
-      {/* ── Body ── */}
-      <div className="flex-1 overflow-hidden">
-
-        {/* Generate Tab */}
-        {tab === 'generate' && (
-          <div className="h-full overflow-y-auto p-4 md:p-6">
-            <GenerateView onStoryReady={() => { loadStories(); setTab('stories') }} stories={stories} />
+        {/* Story list (only in stories tab) */}
+        {tab === 'stories' && (
+          <div className="flex-1 flex flex-col min-h-0 border-t border-white/10 mt-1">
+            <div className="px-3 py-2 shrink-0">
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Filter stories..."
+                className="w-full px-3 py-1.5 bg-white/10 text-white placeholder-white/30 text-xs rounded-lg focus:outline-none focus:bg-white/15 transition-colors" />
+            </div>
+            <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+              {loading ? (
+                [...Array(6)].map((_, i) => (
+                  <div key={i} className="h-12 animate-pulse bg-white/5 rounded-xl" />
+                ))
+              ) : filtered.length === 0 ? (
+                <div className="px-3 py-6 text-center text-white/30 text-xs">No stories yet</div>
+              ) : filtered.map(story => {
+                const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
+                const isActive = selected?.story_id === story.story_id
+                return (
+                  <button key={story.story_id}
+                    onClick={() => { setSelected(story); setMobileView('detail') }}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl transition-all flex items-start gap-2.5 group
+                      ${isActive ? 'bg-white/15' : 'hover:bg-white/8'}`}>
+                    <div className={`w-1 h-full min-h-[32px] rounded-full shrink-0 mt-0.5 ${sc.bar}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-xs font-medium line-clamp-2 leading-snug ${isActive ? 'text-white' : 'text-white/60 group-hover:text-white/80'}`}>
+                        {story.topic}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className="text-xs text-white/25">{story.clips.length || story.scenes_count || 0} clips</span>
+                        {story.youtube_link && <span className="text-xs text-red-400">▶</span>}
+                        {story.hasFinal && <span className="text-xs text-white/25">🎬</span>}
+                      </div>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         )}
 
-        {/* Stories Tab */}
-        {tab === 'stories' && (
-          <div className="h-full flex">
-            {/* Sidebar */}
-            <aside className={`${mobileView === 'detail' ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-72 lg:w-80 shrink-0 bg-white md:border-r border-gray-200`}>
-              <div className="p-3 border-b border-gray-100 shrink-0">
-                <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search stories..."
-                  className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 transition-colors" />
-              </div>
-              <div className="flex-1 overflow-y-auto">
-                {loading ? (
-                  <div className="flex flex-col gap-3 p-4">
-                    {[...Array(5)].map((_, i) => (
-                      <div key={i} className="animate-pulse h-16 bg-gray-100 rounded-xl" />
-                    ))}
-                  </div>
-                ) : filtered.length === 0 ? (
-                  <div className="p-8 text-center">
-                    <p className="text-gray-400 text-sm mb-4">No stories yet</p>
-                    <button onClick={() => setTab('generate')}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors">
-                      ✨ Generate First Story
-                    </button>
-                  </div>
-                ) : filtered.map(story => {
-                  const cfg = STATUS_CONFIG[story.status] || { label: story.status, dot: 'bg-gray-300', bg: 'bg-gray-50', text: 'text-gray-500' }
-                  return (
-                    <button key={story.story_id} onClick={() => { setSelected(story); setMobileView('detail') }}
-                      className={`w-full text-left px-4 py-3.5 border-b border-gray-50 hover:bg-gray-50 active:bg-gray-100 transition-colors ${selected?.story_id === story.story_id ? 'bg-indigo-50 md:border-l-2 md:border-l-indigo-500' : ''}`}>
-                      <div className="flex items-start justify-between gap-2 mb-1.5">
-                        <p className="text-sm font-medium text-gray-800 leading-snug line-clamp-2 flex-1">{story.topic}</p>
-                        <span className={`shrink-0 flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.bg} ${cfg.text}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-                          {cfg.label}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-gray-400">
-                        <span>{story.clips.length || story.scenes_count || 0} clips</span>
-                        {story.hasAudio && <><span>·</span><span>🎵</span></>}
-                        {story.hasFinal && <><span>·</span><span>🎬</span></>}
-                        <span className="ml-auto">
-                          {story.created_at ? new Date(story.created_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : ''}
-                        </span>
-                        <svg className="w-3.5 h-3.5 text-gray-300 md:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        {/* Bottom: stats + actions */}
+        <div className="shrink-0 border-t border-white/10 px-3 py-3 space-y-2">
+          <div className="flex gap-1.5">
+            <div className="flex-1 bg-white/5 rounded-lg px-2 py-1.5 text-center">
+              <p className="text-sm font-bold text-white">{stories.length}</p>
+              <p className="text-xs text-white/30">Total</p>
+            </div>
+            <div className="flex-1 bg-emerald-500/10 rounded-lg px-2 py-1.5 text-center">
+              <p className="text-sm font-bold text-emerald-400">{stories.filter(s => s.status === 'published').length}</p>
+              <p className="text-xs text-emerald-400/60">Live</p>
+            </div>
+          </div>
+          <div className="flex gap-1.5">
+            <button onClick={loadStories}
+              className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80 rounded-lg text-xs transition-colors">
+              ↺ Refresh
+            </button>
+            <button onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}
+              className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80 rounded-lg text-xs transition-colors">
+              Sign out
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* ══════════ MAIN CONTENT ══════════ */}
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+        {/* Mobile top bar */}
+        <header className="md:hidden shrink-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
+          {mobileView === 'detail' && selected ? (
+            <button onClick={() => setMobileView('list')}
+              className="p-1 -ml-1 text-gray-500 hover:text-gray-800">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+              </svg>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2">
+              <img src="/logo_jpg.jpg" className="w-6 h-6 rounded-md object-cover" alt="" />
+              <span className="font-bold text-gray-900 text-sm">KathaKar</span>
+            </div>
+          )}
+          <span className="ml-auto text-sm font-medium text-gray-500 capitalize">{tab}</span>
+        </header>
+
+        {/* Content area */}
+        <div className="flex-1 overflow-hidden">
+
+          {tab === 'generate' && (
+            <div className="h-full overflow-y-auto p-4 md:p-8">
+              <GenerateView onStoryReady={() => { loadStories(); setTab('stories') }} stories={stories} />
+            </div>
+          )}
+
+          {tab === 'stories' && (
+            <div className="h-full flex">
+              {/* Mobile story list */}
+              <div className={`${mobileView === 'detail' ? 'hidden' : 'flex'} md:hidden flex-col w-full bg-white`}>
+                <div className="p-3 border-b border-gray-100">
+                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search stories..."
+                    className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none" />
+                </div>
+                <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
+                  {filtered.map(story => {
+                    const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
+                    return (
+                      <button key={story.story_id} onClick={() => { setSelected(story); setMobileView('detail') }}
+                        className="w-full text-left px-4 py-3.5 hover:bg-gray-50 flex items-start gap-3">
+                        <div className={`w-1 self-stretch rounded-full shrink-0 ${sc.bar}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-800 line-clamp-2">{story.topic}</p>
+                          <div className="flex gap-2 mt-1 items-center">
+                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${sc.badge}`}>{sc.text}</span>
+                            <span className="text-xs text-gray-400">{story.clips.length || story.scenes_count || 0} clips</span>
+                          </div>
+                        </div>
+                        <svg className="w-4 h-4 text-gray-300 shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                         </svg>
-                      </div>
-                    </button>
-                  )
-                })}
-              </div>
-            </aside>
-
-            {/* Detail */}
-            <main className={`${mobileView === 'list' ? 'hidden md:flex' : 'flex'} flex-1 flex-col overflow-y-auto bg-gray-50 p-4 md:p-6`}>
-              {!selected ? (
-                <div className="h-full flex flex-col items-center justify-center text-gray-400 gap-3">
-                  <span className="text-5xl">📚</span>
-                  <p className="text-sm">Select a story from the list</p>
-                  <button onClick={() => setTab('generate')}
-                    className="mt-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold transition-colors">
-                    ✨ Generate New
-                  </button>
+                      </button>
+                    )
+                  })}
                 </div>
-              ) : (
-                <StoryDetail
-                  key={selected.story_id}
-                  story={selected}
-                  onDelete={() => { setSelected(null); setMobileView('list'); setStories(s => s.filter(x => x.story_id !== selected.story_id)) }}
-                  onUpdate={u => setStories(s => s.map(x => x.story_id === u.story_id ? u : x))}
-                />
-              )}
-            </main>
-          </div>
-        )}
+              </div>
 
-        {/* Analytics Tab */}
-        {tab === 'analytics' && (
-          <div className="h-full overflow-y-auto p-4 md:p-6">
-            <AnalyticsView />
-          </div>
-        )}
+              {/* Story detail */}
+              <main className={`${mobileView === 'list' ? 'hidden md:flex' : 'flex'} flex-1 flex-col overflow-y-auto`}>
+                {!selected ? (
+                  <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center p-8">
+                    <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center text-3xl">📚</div>
+                    <div>
+                      <p className="text-sm font-semibold text-gray-700">No story selected</p>
+                      <p className="text-xs text-gray-400 mt-1">Pick from the sidebar or generate a new one</p>
+                    </div>
+                    <button onClick={() => navigate('generate')}
+                      className="px-5 py-2.5 bg-[#111111] hover:bg-black text-white rounded-xl text-sm font-semibold transition-colors">
+                      ✦ Generate New Story
+                    </button>
+                  </div>
+                ) : (
+                  <StoryDetail
+                    key={selected.story_id}
+                    story={selected}
+                    onDelete={() => { setSelected(null); setMobileView('list'); setStories(s => s.filter(x => x.story_id !== selected.story_id)) }}
+                    onUpdate={u => { setStories(s => s.map(x => x.story_id === u.story_id ? u : x)); setSelected(u) }}
+                  />
+                )}
+              </main>
+            </div>
+          )}
 
-        {/* Settings Tab */}
-        {tab === 'settings' && (
-          <div className="h-full overflow-y-auto p-4 md:p-6">
-            <SettingsView />
-          </div>
-        )}
+          {tab === 'analytics' && (
+            <div className="h-full overflow-y-auto p-4 md:p-8">
+              <AnalyticsView />
+            </div>
+          )}
+
+          {tab === 'settings' && (
+            <div className="h-full overflow-y-auto p-4 md:p-8">
+              <SettingsView />
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* ── Mobile Bottom Nav ── */}
-      <nav className="md:hidden shrink-0 bg-white border-t border-gray-200 flex">
-        {[
-          { key: 'generate',  label: 'Generate',  icon: '✨' },
-          { key: 'stories',   label: 'Stories',   icon: '📚' },
-          { key: 'analytics', label: 'Analytics', icon: '📊' },
-          { key: 'settings',  label: 'Settings',  icon: '⚙️' },
-        ].map(t => (
-          <button key={t.key} onClick={() => { setTab(t.key as typeof tab); setMobileView('list') }}
-            className={`flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors ${tab === t.key ? 'text-indigo-600' : 'text-gray-400'}`}>
-            <span className="text-lg leading-none">{t.icon}</span>
-            <span>{t.label}</span>
+      {/* Mobile bottom nav */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-20">
+        {NAV.map(n => (
+          <button key={n.key} onClick={() => navigate(n.key)}
+            className={`flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors
+              ${tab === n.key ? 'text-black' : 'text-gray-400'}`}>
+            <span className={`text-lg leading-none font-bold ${tab === n.key ? 'text-black' : 'text-gray-300'}`}>{n.icon}</span>
+            <span>{n.label}</span>
           </button>
         ))}
       </nav>
@@ -651,177 +698,190 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   const cfg = STATUS_CONFIG[story.status] || { label: story.status, dot: 'bg-gray-300', bg: 'bg-gray-50', text: 'text-gray-500' }
   const selectedNum = selectedClip?.name.match(/scene_(\d+)/)?.[1]
 
-  return (
-    <div className="max-w-2xl mx-auto w-full pb-8">
+  const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
 
-      {/* ── Story Header ─────────────────────────────────────────── */}
-      <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-10">
-        <div className="flex items-start gap-3">
+  return (
+    <div className="h-full flex flex-col bg-[#F5F5F7]">
+
+      {/* ── Header ──────────────────────────────────────────────── */}
+      <div className="shrink-0 bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-start gap-4">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 mb-1 flex-wrap">
-              <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.bg} ${cfg.text}`}>
-                <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
-                {cfg.label}
+            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+              <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-semibold ${sc.badge}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${sc.bar}`} />
+                {sc.text}
               </span>
-              {story.theme && <span className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full">{story.theme}</span>}
+              {story.theme && (
+                <span className="text-xs px-2.5 py-1 bg-gray-100 text-gray-500 rounded-full font-medium">{story.theme}</span>
+              )}
               {story.youtube_link && (
                 <a href={story.youtube_link} target="_blank" rel="noreferrer"
-                  className="text-xs px-2 py-0.5 bg-red-50 text-red-600 rounded-full hover:bg-red-100 transition-colors">▶ Live</a>
+                  className="inline-flex items-center gap-1 text-xs px-2.5 py-1 bg-red-50 text-red-600 rounded-full font-medium hover:bg-red-100 transition-colors">
+                  <span>▶</span> YouTube Live
+                </a>
               )}
             </div>
-            <p className="text-sm font-semibold text-gray-900 leading-snug line-clamp-2">{story.topic}</p>
-            {story.notes && <p className="text-xs text-amber-600 mt-1">⚠ {story.notes}</p>}
+            <h2 className="text-base font-semibold text-gray-900 leading-snug">{story.topic}</h2>
+            {story.notes && (
+              <p className="text-xs text-amber-600 mt-1 flex items-center gap-1">
+                <span>⚠</span> {story.notes}
+              </p>
+            )}
           </div>
           <button onClick={refreshStory} title="Refresh"
-            className="shrink-0 p-1.5 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors">
+            className="shrink-0 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-xl transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
         </div>
-        {/* Quick actions */}
-        <div className="flex gap-2 mt-3">
+
+        <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100">
           <button onClick={downloadZip} disabled={downloading}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl text-xs font-medium transition-colors disabled:opacity-50">
-            <span>⬇</span> {downloading ? 'Zipping...' : 'Download ZIP'}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-[#111111] hover:bg-black text-white rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
+            ⬇ {downloading ? 'Preparing...' : 'Download ZIP'}
           </button>
-          <span className="text-xs text-gray-300 self-center">{clips.length} clips · {story.story_id.slice(-8)}</span>
+          <span className="text-xs text-gray-400">{clips.length} clips</span>
+          <span className="text-xs text-gray-300">·</span>
+          <span className="text-xs text-gray-400 font-mono">{story.story_id.slice(-8)}</span>
           <button onClick={deleteStory} disabled={deleting}
-            className="ml-auto px-3 py-1.5 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-xl text-xs font-medium transition-colors disabled:opacity-50">
-            {deleting ? '⏳' : '🗑 Delete'}
+            className="ml-auto text-xs text-gray-400 hover:text-red-500 hover:bg-red-50 px-3 py-2 rounded-xl transition-colors disabled:opacity-50">
+            {deleting ? '...' : '🗑 Delete'}
           </button>
         </div>
       </div>
 
-      <div className="p-4 space-y-3">
+      {/* ── Scrollable content ──────────────────────────────────── */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-2xl mx-auto p-5 space-y-3">
 
-        {/* ── YouTube Section ─────────────────────────────────────── */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-50 flex items-center gap-2">
-            <span className="text-red-600">▶</span>
-            <span className="text-sm font-semibold text-gray-800">Publish to YouTube Shorts</span>
-          </div>
-          <div className="p-4">
-            <YoutubeUpload story={story} clips={clips} hasAudio={story.hasAudio} onUpdate={onUpdate} />
-          </div>
-        </div>
-
-        {/* ── Raw Clips ───────────────────────────────────────────── */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-          <button onClick={() => setClipsOpen(o => !o)}
-            className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-            <div className="flex items-center gap-2">
-              <span className="text-base">📹</span>
-              <span className="text-sm font-semibold text-gray-800">Raw Clips</span>
-              {clips.length > 0 && (
-                <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{clips.length}</span>
-              )}
+          {/* YouTube */}
+          <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-200/60">
+            <div className="px-5 py-3.5 border-b border-gray-100 flex items-center justify-between">
+              <span className="text-sm font-semibold text-gray-900">YouTube Shorts</span>
+              <span className="text-red-500 text-sm">▶</span>
             </div>
-            <span className="text-gray-400 text-sm">{clipsOpen ? '▲' : '▼'}</span>
-          </button>
+            <div className="p-5">
+              <YoutubeUpload story={story} clips={clips} hasAudio={story.hasAudio} onUpdate={onUpdate} />
+            </div>
+          </div>
 
-          {clipsOpen && (
-            <div className="border-t border-gray-50 p-4">
-              {clips.length === 0 ? (
-                <div className="text-center py-8 text-gray-400">
-                  <p className="text-3xl mb-2">🎬</p>
-                  <p className="text-sm">No clips generated yet</p>
-                </div>
-              ) : (
-                <>
-                  {/* Clip selector grid */}
-                  <div className="grid grid-cols-5 gap-1.5 mb-4">
-                    {clips.map(clip => {
-                      const num = clip.name.match(/scene_(\d+)/)?.[1] || '?'
-                      const isActive = selectedClip?.url === clip.url
-                      return (
-                        <div key={clip.name} className="relative group">
-                          <button onClick={() => selectClip(clip)}
-                            className={`w-full aspect-[9/16] rounded-xl flex flex-col items-center justify-center text-xs font-bold transition-all border-2 ${
-                              isActive
-                                ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-200'
-                                : 'bg-gray-100 border-transparent text-gray-500 hover:bg-gray-200 hover:border-gray-300'
-                            }`}>
-                            <span className="text-lg leading-none">{isActive ? '▶' : num}</span>
-                            {!isActive && <span className="text-xs mt-0.5 opacity-60">S{num}</span>}
-                          </button>
-                          {/* Delete on hover */}
-                          <button onClick={() => deleteClip(clip.name, clip.url)}
-                            disabled={!!deletingClip}
-                            className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs items-center justify-center hidden group-hover:flex transition-all hover:bg-red-600 disabled:opacity-50">
-                            {deletingClip === clip.name ? '·' : '✕'}
-                          </button>
-                        </div>
-                      )
-                    })}
+          {/* Raw Clips */}
+          <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-200/60">
+            <button onClick={() => setClipsOpen(o => !o)}
+              className="w-full px-5 py-3.5 flex items-center justify-between hover:bg-gray-50/80 transition-colors">
+              <div className="flex items-center gap-2.5">
+                <span className="text-sm font-semibold text-gray-900">Raw Clips</span>
+                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${clips.length > 0 ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400'}`}>
+                  {clips.length}
+                </span>
+              </div>
+              <span className="text-gray-400 text-xs">{clipsOpen ? '▲' : '▼'}</span>
+            </button>
+
+            {clipsOpen && (
+              <div className="border-t border-gray-100 p-5">
+                {clips.length === 0 ? (
+                  <div className="text-center py-10">
+                    <div className="w-12 h-12 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-3 text-xl">🎬</div>
+                    <p className="text-sm text-gray-500 font-medium">No clips yet</p>
+                    <p className="text-xs text-gray-400 mt-0.5">Generate a story to create clips</p>
                   </div>
-
-                  {/* Video player — click to reveal, not auto-loading */}
-                  {selectedClip ? (
-                    <div className="space-y-2">
-                      {!isPlaying ? (
-                        // Click-to-play placeholder — no video loaded yet
-                        <button onClick={() => setIsPlaying(true)}
-                          className="w-full aspect-video max-h-72 bg-gray-900 rounded-xl flex flex-col items-center justify-center group relative overflow-hidden">
-                          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/40" />
-                          <div className="relative z-10 text-center">
-                            <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center mb-2 group-hover:bg-white/30 group-hover:scale-110 transition-all">
-                              <span className="text-white text-2xl ml-1">▶</span>
-                            </div>
-                            <p className="text-white text-sm font-semibold">Scene {selectedNum}</p>
-                            <p className="text-white/50 text-xs mt-0.5">Click to play</p>
+                ) : (
+                  <>
+                    {/* Grid */}
+                    <div className="grid grid-cols-5 gap-2 mb-4">
+                      {clips.map(clip => {
+                        const num = clip.name.match(/scene_(\d+)/)?.[1] || '?'
+                        const isActive = selectedClip?.url === clip.url
+                        return (
+                          <div key={clip.name} className="relative group">
+                            <button onClick={() => selectClip(clip)}
+                              className={`w-full aspect-[9/16] rounded-xl flex flex-col items-center justify-center font-bold transition-all
+                                ${isActive
+                                  ? 'bg-[#111111] text-white shadow-lg'
+                                  : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                                }`}>
+                              {isActive ? (
+                                <span className="text-xl">▶</span>
+                              ) : (
+                                <>
+                                  <span className="text-sm font-bold text-gray-700">{num}</span>
+                                  <span className="text-xs text-gray-400">S</span>
+                                </>
+                              )}
+                            </button>
+                            <button onClick={() => deleteClip(clip.name, clip.url)} disabled={!!deletingClip}
+                              className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs items-center justify-center hidden group-hover:flex shadow-sm disabled:opacity-50">
+                              {deletingClip === clip.name ? '·' : '×'}
+                            </button>
                           </div>
-                        </button>
-                      ) : (
-                        // Video element — only rendered when user clicks play
-                        <video key={selectedClip.url} controls autoPlay
-                          className="w-full max-h-72 bg-gray-900 rounded-xl"
-                          src={selectedClip.url}
-                          onEnded={() => setIsPlaying(false)}
-                        />
-                      )}
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs text-gray-400 font-mono">Scene {selectedNum}</span>
-                        <div className="flex gap-3">
-                          {isPlaying && (
-                            <button onClick={() => setIsPlaying(false)} className="text-xs text-gray-400 hover:text-gray-600">⏹ Stop</button>
-                          )}
-                          <a href={selectedClip.url} download className="text-xs text-indigo-500 hover:underline">⬇ Download</a>
+                        )
+                      })}
+                    </div>
+
+                    {/* Player */}
+                    {selectedClip ? (
+                      <div className="space-y-2.5">
+                        {!isPlaying ? (
+                          <button onClick={() => setIsPlaying(true)}
+                            className="w-full aspect-video max-h-64 bg-[#111111] rounded-2xl flex items-center justify-center group overflow-hidden relative">
+                            <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                            <div className="relative z-10 text-center">
+                              <div className="w-14 h-14 bg-white/15 rounded-full flex items-center justify-center mb-2 group-hover:bg-white/25 group-hover:scale-105 transition-all">
+                                <span className="text-white text-xl ml-1">▶</span>
+                              </div>
+                              <p className="text-white/80 text-xs">Scene {selectedNum} · Click to play</p>
+                            </div>
+                          </button>
+                        ) : (
+                          <video key={selectedClip.url} controls autoPlay
+                            className="w-full max-h-64 bg-black rounded-2xl"
+                            src={selectedClip.url} onEnded={() => setIsPlaying(false)} />
+                        )}
+                        <div className="flex items-center justify-between px-1">
+                          <span className="text-xs text-gray-400">Scene {selectedNum}</span>
+                          <div className="flex items-center gap-3">
+                            {isPlaying && (
+                              <button onClick={() => setIsPlaying(false)} className="text-xs text-gray-400 hover:text-gray-600">⏹ Stop</button>
+                            )}
+                            <a href={selectedClip.url} download className="text-xs text-gray-500 hover:text-black font-medium">⬇ Download</a>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ) : (
-                    <div className="text-center py-4 text-gray-400 text-xs border border-dashed border-gray-200 rounded-xl">
-                      Select a scene above to preview
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* ── Narration Audio ─────────────────────────────────────── */}
-        {story.audio_url && (
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-            <button onClick={() => setAudioOpen(o => !o)}
-              className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-2">
-                <span className="text-base">🎵</span>
-                <span className="text-sm font-semibold text-gray-800">Hindi Narration</span>
-                <span className="text-xs text-emerald-500 font-medium">Ready</span>
-              </div>
-              <span className="text-gray-400 text-sm">{audioOpen ? '▲' : '▼'}</span>
-            </button>
-            {audioOpen && (
-              <div className="border-t border-gray-50 px-4 pb-4 pt-3 space-y-2">
-                <audio controls className="w-full" preload="none" src={story.audio_url} />
-                <a href={story.audio_url} download className="text-xs text-indigo-500 hover:underline inline-block">⬇ Download MP3</a>
+                    ) : (
+                      <div className="rounded-xl bg-gray-50 border border-dashed border-gray-200 py-6 text-center text-xs text-gray-400">
+                        Select a scene above to preview
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>
-        )}
 
+          {/* Narration */}
+          {story.audio_url && (
+            <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-200/60">
+              <button onClick={() => setAudioOpen(o => !o)}
+                className="w-full px-5 py-3.5 flex items-center justify-between hover:bg-gray-50/80 transition-colors">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-sm font-semibold text-gray-900">Narration Audio</span>
+                  <span className="text-xs text-emerald-500 font-medium">Ready</span>
+                </div>
+                <span className="text-gray-400 text-xs">{audioOpen ? '▲' : '▼'}</span>
+              </button>
+              {audioOpen && (
+                <div className="border-t border-gray-100 px-5 pb-5 pt-4 space-y-2">
+                  <audio controls className="w-full" preload="none" src={story.audio_url} />
+                  <a href={story.audio_url} download className="text-xs text-gray-500 hover:text-black font-medium">⬇ Download MP3</a>
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
       </div>
     </div>
   )
