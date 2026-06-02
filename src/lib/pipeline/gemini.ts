@@ -15,12 +15,20 @@ async function callGemini(systemPrompt: string, userPrompt: string, temperature 
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      generationConfig: { temperature, maxOutputTokens: 8192, responseMimeType: 'application/json' },
+      generationConfig: { temperature, maxOutputTokens: 65536, responseMimeType: 'application/json' },
     }),
   })
   if (!res.ok) throw new Error(`Gemini error ${res.status}: ${await res.text()}`)
   const data = await res.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+
+  // Check for finish reason — STOP = complete, MAX_TOKENS = truncated
+  const candidate = data.candidates?.[0]
+  const finishReason = candidate?.finishReason
+  if (finishReason === 'MAX_TOKENS') {
+    throw new Error(`Gemini response truncated (MAX_TOKENS hit). Response was cut at: ...${(candidate?.content?.parts?.[0]?.text || '').slice(-100)}`)
+  }
+
+  const text = candidate?.content?.parts?.[0]?.text
   if (!text) throw new Error('Gemini returned empty response')
   return text
 }
