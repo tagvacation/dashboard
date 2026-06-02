@@ -590,10 +590,13 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
 
 function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: () => void; onUpdate: (s: Story) => void }) {
   const [clips, setClips] = useState(story.clips)
-  const [activeClip, setActiveClip] = useState<string | null>(story.clips[0]?.url || null)
+  const [selectedClip, setSelectedClip] = useState<{ url: string; name: string } | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deletingClip, setDeletingClip] = useState('')
+  const [clipsOpen, setClipsOpen] = useState(true)
+  const [audioOpen, setAudioOpen] = useState(false)
 
   const refreshStory = async () => {
     const res = await fetch(`/api/stories/${story.story_id}`)
@@ -613,7 +616,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   }
 
   const deleteStory = async () => {
-    if (!confirm('Delete this story and ALL files from GCS + sheet? This cannot be undone.')) return
+    if (!confirm('Delete this story and ALL files? This cannot be undone.')) return
     setDeleting(true)
     const res = await fetch(`/api/stories/${story.story_id}`, { method: 'DELETE' })
     if (res.ok) { onDelete() } else {
@@ -623,102 +626,202 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   }
 
   const deleteClip = async (clipName: string, clipUrl: string) => {
-    if (!confirm('Delete this clip from GCS?')) return
+    if (!confirm('Delete this clip?')) return
     setDeletingClip(clipName)
     const res = await fetch(`/api/stories/${story.story_id}/clip?path=${encodeURIComponent(clipName)}`, { method: 'DELETE' })
     const data = await res.json()
-    if (res.ok && data.remainingClips) {
-      // Use server-confirmed remaining list
-      setClips(data.remainingClips)
-      onUpdate({ ...story, clips: data.remainingClips, scenes_count: String(data.remainingClips.length) })
-      if (activeClip === clipUrl) setActiveClip(data.remainingClips[0]?.url || null)
-    } else if (res.ok) {
-      const remaining = clips.filter(c => c.name !== clipName)
+    if (res.ok) {
+      const remaining = data.remainingClips || clips.filter(c => c.name !== clipName)
       setClips(remaining)
-      if (activeClip === clipUrl) setActiveClip(remaining[0]?.url || null)
+      onUpdate({ ...story, clips: remaining, scenes_count: String(remaining.length) })
+      if (selectedClip?.url === clipUrl) { setSelectedClip(null); setIsPlaying(false) }
     }
     setDeletingClip('')
   }
 
-  return (
-    <div className="max-w-2xl mx-auto w-full space-y-4 pb-6">
+  const selectClip = (clip: { url: string; name: string }) => {
+    if (selectedClip?.url === clip.url) {
+      setIsPlaying(true) // clicking active clip starts playing
+    } else {
+      setSelectedClip(clip)
+      setIsPlaying(false) // new clip selected — show play button, don't autoplay
+    }
+  }
 
-      {/* Story header */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <div className="flex items-start gap-3 mb-3">
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-gray-900 leading-relaxed">{story.topic}</p>
-            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-              <span className="text-xs text-gray-400">{story.story_id}</span>
+  const cfg = STATUS_CONFIG[story.status] || { label: story.status, dot: 'bg-gray-300', bg: 'bg-gray-50', text: 'text-gray-500' }
+  const selectedNum = selectedClip?.name.match(/scene_(\d+)/)?.[1]
+
+  return (
+    <div className="max-w-2xl mx-auto w-full pb-8">
+
+      {/* ── Story Header ─────────────────────────────────────────── */}
+      <div className="bg-white border-b border-gray-100 px-4 py-4 sticky top-0 z-10">
+        <div className="flex items-start gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full font-medium ${cfg.bg} ${cfg.text}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+                {cfg.label}
+              </span>
               {story.theme && <span className="text-xs px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full">{story.theme}</span>}
-              {story.notes && <span className="text-xs px-2 py-0.5 bg-amber-50 text-amber-600 rounded-full truncate max-w-[180px]" title={story.notes}>⚠ {story.notes.slice(0, 30)}</span>}
+              {story.youtube_link && (
+                <a href={story.youtube_link} target="_blank" rel="noreferrer"
+                  className="text-xs px-2 py-0.5 bg-red-50 text-red-600 rounded-full hover:bg-red-100 transition-colors">▶ Live</a>
+              )}
             </div>
+            <p className="text-sm font-semibold text-gray-900 leading-snug line-clamp-2">{story.topic}</p>
+            {story.notes && <p className="text-xs text-amber-600 mt-1">⚠ {story.notes}</p>}
           </div>
-          {/* Refresh button */}
-          <button onClick={refreshStory} title="Refresh from server"
-            className="shrink-0 p-2 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-xl transition-colors">
+          <button onClick={refreshStory} title="Refresh"
+            className="shrink-0 p-1.5 text-gray-400 hover:text-indigo-500 hover:bg-indigo-50 rounded-lg transition-colors">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
           </button>
         </div>
-        <div className="flex gap-2">
+        {/* Quick actions */}
+        <div className="flex gap-2 mt-3">
           <button onClick={downloadZip} disabled={downloading}
-            className="flex-1 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
-            {downloading ? '⏳ Preparing...' : '⬇ Download ZIP'}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl text-xs font-medium transition-colors disabled:opacity-50">
+            <span>⬇</span> {downloading ? 'Zipping...' : 'Download ZIP'}
           </button>
+          <span className="text-xs text-gray-300 self-center">{clips.length} clips · {story.story_id.slice(-8)}</span>
           <button onClick={deleteStory} disabled={deleting}
-            className="px-4 py-2.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50">
-            {deleting ? '⏳' : '🗑'}
+            className="ml-auto px-3 py-1.5 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-xl text-xs font-medium transition-colors disabled:opacity-50">
+            {deleting ? '⏳' : '🗑 Delete'}
           </button>
         </div>
       </div>
 
-      {/* YouTube Upload — simplified: file → YouTube → store URL */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">▶ YouTube Shorts</h3>
-        <YoutubeUpload story={story} clips={clips} hasAudio={story.hasAudio} onUpdate={onUpdate} />
-      </div>
+      <div className="p-4 space-y-3">
 
-      {/* Audio */}
-      {story.audio_url && (
-        <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">🎵 Narration</h3>
-          <audio controls className="w-full" src={story.audio_url} />
-          <a href={story.audio_url} download className="mt-2 inline-block text-xs text-indigo-500 hover:underline">⬇ Download MP3</a>
+        {/* ── YouTube Section ─────────────────────────────────────── */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-50 flex items-center gap-2">
+            <span className="text-red-600">▶</span>
+            <span className="text-sm font-semibold text-gray-800">Publish to YouTube Shorts</span>
+          </div>
+          <div className="p-4">
+            <YoutubeUpload story={story} clips={clips} hasAudio={story.hasAudio} onUpdate={onUpdate} />
+          </div>
         </div>
-      )}
 
-      {/* Clips */}
-      <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
-        <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">📹 Raw Clips ({clips.length})</h3>
-        {clips.length === 0 ? (
-          <p className="text-xs text-gray-400 text-center py-4">No clips yet</p>
-        ) : (
-          <>
-            <div className="flex gap-2 overflow-x-auto pb-2 mb-3 -mx-1 px-1">
-              {clips.map(clip => {
-                const num = clip.name.match(/scene_(\d+)/)?.[1]
-                const isActive = activeClip === clip.url
-                return (
-                  <div key={clip.name} className={`flex items-center shrink-0 rounded-xl overflow-hidden transition-colors ${isActive ? 'bg-indigo-500' : 'bg-gray-100'}`}>
-                    <button onClick={() => setActiveClip(clip.url)} className={`px-3 py-2 text-xs font-medium ${isActive ? 'text-white' : 'text-gray-600'}`}>S{num}</button>
-                    <button onClick={() => deleteClip(clip.name, clip.url)} disabled={!!deletingClip}
-                      className={`pr-2 text-xs transition-colors ${isActive ? 'text-indigo-200' : 'text-gray-400'} hover:text-red-500`}>
-                      {deletingClip === clip.name ? '·' : '✕'}
-                    </button>
-                  </div>
-                )
-              })}
+        {/* ── Raw Clips ───────────────────────────────────────────── */}
+        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+          <button onClick={() => setClipsOpen(o => !o)}
+            className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
+            <div className="flex items-center gap-2">
+              <span className="text-base">📹</span>
+              <span className="text-sm font-semibold text-gray-800">Raw Clips</span>
+              {clips.length > 0 && (
+                <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{clips.length}</span>
+              )}
             </div>
-            {activeClip && (
-              <>
-                <video key={activeClip} controls className="w-full bg-gray-900 rounded-xl" src={activeClip} />
-                <a href={activeClip} download className="mt-2 inline-block text-xs text-indigo-500 hover:underline">⬇ Download clip</a>
-              </>
+            <span className="text-gray-400 text-sm">{clipsOpen ? '▲' : '▼'}</span>
+          </button>
+
+          {clipsOpen && (
+            <div className="border-t border-gray-50 p-4">
+              {clips.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">
+                  <p className="text-3xl mb-2">🎬</p>
+                  <p className="text-sm">No clips generated yet</p>
+                </div>
+              ) : (
+                <>
+                  {/* Clip selector grid */}
+                  <div className="grid grid-cols-5 gap-1.5 mb-4">
+                    {clips.map(clip => {
+                      const num = clip.name.match(/scene_(\d+)/)?.[1] || '?'
+                      const isActive = selectedClip?.url === clip.url
+                      return (
+                        <div key={clip.name} className="relative group">
+                          <button onClick={() => selectClip(clip)}
+                            className={`w-full aspect-[9/16] rounded-xl flex flex-col items-center justify-center text-xs font-bold transition-all border-2 ${
+                              isActive
+                                ? 'bg-indigo-600 border-indigo-600 text-white shadow-lg shadow-indigo-200'
+                                : 'bg-gray-100 border-transparent text-gray-500 hover:bg-gray-200 hover:border-gray-300'
+                            }`}>
+                            <span className="text-lg leading-none">{isActive ? '▶' : num}</span>
+                            {!isActive && <span className="text-xs mt-0.5 opacity-60">S{num}</span>}
+                          </button>
+                          {/* Delete on hover */}
+                          <button onClick={() => deleteClip(clip.name, clip.url)}
+                            disabled={!!deletingClip}
+                            className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white rounded-full text-xs items-center justify-center hidden group-hover:flex transition-all hover:bg-red-600 disabled:opacity-50">
+                            {deletingClip === clip.name ? '·' : '✕'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+
+                  {/* Video player — click to reveal, not auto-loading */}
+                  {selectedClip ? (
+                    <div className="space-y-2">
+                      {!isPlaying ? (
+                        // Click-to-play placeholder — no video loaded yet
+                        <button onClick={() => setIsPlaying(true)}
+                          className="w-full aspect-video max-h-72 bg-gray-900 rounded-xl flex flex-col items-center justify-center group relative overflow-hidden">
+                          <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/40" />
+                          <div className="relative z-10 text-center">
+                            <div className="w-16 h-16 bg-white/20 backdrop-blur-sm rounded-full flex items-center justify-center mb-2 group-hover:bg-white/30 group-hover:scale-110 transition-all">
+                              <span className="text-white text-2xl ml-1">▶</span>
+                            </div>
+                            <p className="text-white text-sm font-semibold">Scene {selectedNum}</p>
+                            <p className="text-white/50 text-xs mt-0.5">Click to play</p>
+                          </div>
+                        </button>
+                      ) : (
+                        // Video element — only rendered when user clicks play
+                        <video key={selectedClip.url} controls autoPlay
+                          className="w-full max-h-72 bg-gray-900 rounded-xl"
+                          src={selectedClip.url}
+                          onEnded={() => setIsPlaying(false)}
+                        />
+                      )}
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-400 font-mono">Scene {selectedNum}</span>
+                        <div className="flex gap-3">
+                          {isPlaying && (
+                            <button onClick={() => setIsPlaying(false)} className="text-xs text-gray-400 hover:text-gray-600">⏹ Stop</button>
+                          )}
+                          <a href={selectedClip.url} download className="text-xs text-indigo-500 hover:underline">⬇ Download</a>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-center py-4 text-gray-400 text-xs border border-dashed border-gray-200 rounded-xl">
+                      Select a scene above to preview
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Narration Audio ─────────────────────────────────────── */}
+        {story.audio_url && (
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+            <button onClick={() => setAudioOpen(o => !o)}
+              className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🎵</span>
+                <span className="text-sm font-semibold text-gray-800">Hindi Narration</span>
+                <span className="text-xs text-emerald-500 font-medium">Ready</span>
+              </div>
+              <span className="text-gray-400 text-sm">{audioOpen ? '▲' : '▼'}</span>
+            </button>
+            {audioOpen && (
+              <div className="border-t border-gray-50 px-4 pb-4 pt-3 space-y-2">
+                <audio controls className="w-full" preload="none" src={story.audio_url} />
+                <a href={story.audio_url} download className="text-xs text-indigo-500 hover:underline inline-block">⬇ Download MP3</a>
+              </div>
             )}
-          </>
+          </div>
         )}
+
       </div>
     </div>
   )
