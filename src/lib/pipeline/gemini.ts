@@ -1,15 +1,18 @@
-import { getAccessToken, GCP_PROJECT, GCP_REGION } from './auth'
 import { settingsDb } from '../db'
 import type { Script, Scene } from './types'
 
-const GEMINI_MODEL = 'gemini-2.0-flash-001'
-const BASE = `https://${GCP_REGION}-aiplatform.googleapis.com/v1/projects/${GCP_PROJECT}/locations/${GCP_REGION}/publishers/google/models`
+// Direct Gemini API (not Vertex AI) — same as n8n's googlePalmApi
+// Supports: gemini-2.0-flash, gemini-2.5-flash-preview-05-20, gemini-1.5-flash-002
+const GEMINI_MODEL = 'gemini-2.0-flash'
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
 
 async function callGemini(systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
-  const token = await getAccessToken()
-  const res = await fetch(`${BASE}/${GEMINI_MODEL}:generateContent`, {
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set in environment variables')
+
+  const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -294,17 +297,21 @@ Your output must be a SINGLE JSON object with these exact keys:
 
 export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promise<string> {
   const system = await getPrompt('scene_rewrite')
-  const token = await getAccessToken()
-  const res = await fetch(`${BASE}/${GEMINI_MODEL}:generateContent`, {
+  const user = `Story: ${topic}\nScene ${scene.scene_num} — Beat: ${scene.beat}\nNarrator: "${scene.tts_text}"\n\nOriginal rejected prompt:\n${scene.video_prompt}\n\nRewrite: keep character anchors verbatim, keep Indian period setting, replace only the filtered action.`
+
+  const apiKey = process.env.GEMINI_API_KEY
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set')
+
+  const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: `Story: ${topic}\nScene ${scene.scene_num} — Beat: ${scene.beat}\nNarrator: "${scene.tts_text}"\n\nOriginal rejected prompt:\n${scene.video_prompt}\n\nRewrite: keep character anchors verbatim, keep Indian period setting, replace only the filtered action.` }] }],
+      contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: { temperature: 0.2, maxOutputTokens: 450 },
     }),
   })
-  if (!res.ok) throw new Error(`Gemini rewrite error ${res.status}`)
+  if (!res.ok) throw new Error(`Gemini rewrite error ${res.status}: ${await res.text()}`)
   const data = await res.json()
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || scene.video_prompt
 }
