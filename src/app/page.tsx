@@ -611,51 +611,64 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   )
 }
 
-// ─── YouTube Upload (simplified) ──────────────────────────────────────────────
+// ─── YouTube Upload ────────────────────────────────────────────────────────────
 
 function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
   story: Story; clips: Clip[]; hasAudio: boolean; onUpdate: (s: Story) => void
 }) {
-  const ytLink = story.youtube_link || ''
+  const [ytLink, setYtLink] = useState(story.youtube_link || '')
   const [title, setTitle] = useState(story.topic.slice(0, 90))
   const [description, setDescription] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
   const [tags, setTags] = useState('shorts,hindi story,moral story,kathakar')
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
+  const [showManual, setShowManual] = useState(false)
+  const [manualUrl, setManualUrl] = useState('')
+  const [savingManual, setSavingManual] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
-  // Already uploaded — just show the link
-  if (ytLink) return (
-    <div className="space-y-3">
-      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 flex items-center gap-3">
-        <span className="text-xl">✅</span>
-        <div className="flex-1 min-w-0">
-          <p className="text-xs font-semibold text-emerald-800 mb-0.5">Uploaded to YouTube</p>
-          <a href={ytLink} target="_blank" rel="noreferrer"
-            className="text-xs text-emerald-700 hover:underline break-all">{ytLink}</a>
-        </div>
-      </div>
-      <a href={ytLink} target="_blank" rel="noreferrer"
-        className="block w-full text-center py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-semibold transition-colors">
-        ▶ Open YouTube Short
-      </a>
-    </div>
-  )
+  // ── Save manual URL ─────────────────────────────────────────────────────────
+  const saveManualLink = async () => {
+    if (!manualUrl.trim()) { setError('Enter a YouTube URL'); return }
+    const isYT = manualUrl.includes('youtube.com') || manualUrl.includes('youtu.be')
+    if (!isYT) { setError('Must be a YouTube URL (youtube.com or youtu.be)'); return }
+    setSavingManual(true); setError('')
+    const res = await fetch(`/api/stories/${story.story_id}/youtube-link`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: manualUrl.trim() }),
+    })
+    const data = await res.json()
+    if (res.ok) {
+      setYtLink(data.youtube_link)
+      setManualUrl(''); setShowManual(false)
+      onUpdate({ ...story, youtube_link: data.youtube_link, status: 'published' })
+    } else {
+      setError(data.error || 'Failed to save')
+    }
+    setSavingManual(false)
+  }
 
-  // Pre-upload checklist
-  const missingClips = clips.length === 0
-  const missingAudio = !hasAudio
+  // ── Delete link ─────────────────────────────────────────────────────────────
+  const deleteLink = async () => {
+    if (!confirm('Remove YouTube link? This will set status back to clips_ready.')) return
+    setDeleting(true)
+    const res = await fetch(`/api/stories/${story.story_id}/youtube-link`, { method: 'DELETE' })
+    if (res.ok) {
+      setYtLink('')
+      onUpdate({ ...story, youtube_link: '', status: 'clips_ready' })
+    }
+    setDeleting(false)
+  }
 
+  // ── File upload via XHR ─────────────────────────────────────────────────────
   const upload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return
     e.target.value = ''
-
-    if (!file.type.includes('video') && !file.name.endsWith('.mp4')) {
-      setError('Only MP4 files supported'); return
-    }
+    if (!file.type.includes('video') && !file.name.endsWith('.mp4')) { setError('Only MP4 files supported'); return }
     const sizeMB = file.size / (1024 * 1024)
     if (sizeMB > 1024) { setError(`File too large: ${sizeMB.toFixed(0)}MB (max 1GB)`); return }
-
     setUploading(true); setError(''); setProgress(0)
 
     const xhr = new XMLHttpRequest()
@@ -664,41 +677,93 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
     xhr.setRequestHeader('X-Title', encodeURIComponent(title))
     xhr.setRequestHeader('X-Description', encodeURIComponent(description))
     xhr.setRequestHeader('X-Tags', encodeURIComponent(tags))
-
     xhr.upload.onprogress = ev => { if (ev.lengthComputable) setProgress(Math.round(ev.loaded / ev.total * 100)) }
-
     xhr.onload = () => {
       try {
         const data = JSON.parse(xhr.responseText)
         if (xhr.status < 300 && data.youtubeUrl) {
+          setYtLink(data.youtubeUrl)
           onUpdate({ ...story, youtube_link: data.youtubeUrl, status: 'published' })
-        } else {
-          setError(data.error || `Upload failed (HTTP ${xhr.status})`)
-        }
+        } else { setError(data.error || `Upload failed (HTTP ${xhr.status})`) }
       } catch { setError('Invalid server response') }
       setUploading(false)
     }
     xhr.onerror = () => { setError('Network error — check connection'); setUploading(false) }
-    xhr.timeout = 15 * 60 * 1000 // 15 min
-    xhr.ontimeout = () => { setError('Timed out — YouTube upload can be slow, try again'); setUploading(false) }
+    xhr.timeout = 15 * 60 * 1000
+    xhr.ontimeout = () => { setError('Timed out — try again'); setUploading(false) }
     xhr.send(file)
   }
 
+  const missingClips = clips.length === 0
+
+  // ── Published state ─────────────────────────────────────────────────────────
+  if (ytLink) return (
+    <div className="space-y-3">
+      {/* Published card */}
+      <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+        <div className="flex items-start gap-2 mb-2">
+          <span className="text-lg shrink-0">✅</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-semibold text-emerald-800">Published on YouTube</p>
+            <a href={ytLink} target="_blank" rel="noreferrer"
+              className="text-xs text-emerald-700 hover:underline break-all mt-0.5 block">{ytLink}</a>
+          </div>
+        </div>
+        <div className="flex gap-2 mt-3">
+          <a href={ytLink} target="_blank" rel="noreferrer"
+            className="flex-1 text-center py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-semibold transition-colors">
+            ▶ Open on YouTube
+          </a>
+          <button onClick={deleteLink} disabled={deleting}
+            className="px-3 py-2 bg-gray-100 hover:bg-red-50 hover:text-red-600 text-gray-500 rounded-xl text-xs font-medium transition-colors disabled:opacity-50">
+            {deleting ? '...' : '🗑 Remove'}
+          </button>
+        </div>
+      </div>
+
+      {/* Edit URL inline */}
+      {showManual ? (
+        <div className="space-y-2">
+          <input value={manualUrl} onChange={e => setManualUrl(e.target.value)}
+            placeholder="Paste new YouTube URL to replace"
+            className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400" />
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex gap-2">
+            <button onClick={saveManualLink} disabled={savingManual}
+              className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold disabled:opacity-50">
+              {savingManual ? 'Saving...' : '✓ Update URL'}
+            </button>
+            <button onClick={() => { setShowManual(false); setError('') }}
+              className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setShowManual(true)}
+          className="w-full py-2 text-xs text-gray-400 hover:text-indigo-500 transition-colors">
+          ✏️ Change URL
+        </button>
+      )}
+    </div>
+  )
+
+  // ── Upload state ────────────────────────────────────────────────────────────
   return (
     <div className="space-y-3">
       {/* Checklist */}
       <div className="space-y-1.5">
         <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${!missingClips ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
           <span>{!missingClips ? '✅' : '⚠️'}</span>
-          <span>{!missingClips ? `${clips.length} raw clips ready in GCS` : 'No clips yet — generate video first'}</span>
+          <span>{!missingClips ? `${clips.length} raw clips in GCS` : 'No clips yet — generate first'}</span>
         </div>
-        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${!missingAudio ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-400'}`}>
-          <span>{!missingAudio ? '✅' : 'ℹ️'}</span>
-          <span>{!missingAudio ? 'Hindi narration audio ready' : 'No narration audio yet'}</span>
+        <div className={`flex items-center gap-2 text-xs px-3 py-2 rounded-lg ${hasAudio ? 'bg-emerald-50 text-emerald-700' : 'bg-gray-50 text-gray-400'}`}>
+          <span>{hasAudio ? '✅' : 'ℹ️'}</span>
+          <span>{hasAudio ? 'Hindi narration audio ready' : 'No narration audio yet'}</span>
         </div>
         <div className="flex items-center gap-2 text-xs px-3 py-2 rounded-lg bg-blue-50 text-blue-600">
           <span>ℹ️</span>
-          <span>Edit in CapCut/DaVinci → Export MP4 → Upload below → Goes directly to YouTube</span>
+          <span>Edit in CapCut/DaVinci → Export MP4 → Upload below → Directly to YouTube</span>
         </div>
       </div>
 
@@ -751,6 +816,33 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
           ▶ Select MP4 & Upload to YouTube Shorts
           <input type="file" accept="video/mp4,video/*" className="hidden" onChange={upload} />
         </label>
+      )}
+
+      {/* Manual URL option */}
+      {!showManual ? (
+        <button onClick={() => { setShowManual(true); setError('') }}
+          className="w-full py-2 text-xs text-gray-400 hover:text-gray-600 transition-colors border border-dashed border-gray-200 rounded-xl">
+          📎 Already uploaded to YouTube? Paste URL manually
+        </button>
+      ) : (
+        <div className="space-y-2 p-3 bg-gray-50 border border-gray-200 rounded-xl">
+          <label className="text-xs text-gray-600 font-medium block">Paste YouTube Short URL</label>
+          <input value={manualUrl} onChange={e => { setManualUrl(e.target.value); setError('') }}
+            placeholder="https://youtube.com/shorts/..."
+            onKeyDown={e => e.key === 'Enter' && saveManualLink()}
+            className="w-full px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-emerald-400" />
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          <div className="flex gap-2">
+            <button onClick={saveManualLink} disabled={savingManual || !manualUrl.trim()}
+              className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold transition-colors">
+              {savingManual ? '...' : '✓ Save Link'}
+            </button>
+            <button onClick={() => { setShowManual(false); setManualUrl(''); setError('') }}
+              className="px-4 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-500 rounded-xl text-xs transition-colors">
+              Cancel
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
