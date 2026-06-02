@@ -52,6 +52,27 @@ async function createTables() {
     )
   `
   await sql`
+    CREATE TABLE IF NOT EXISTS scene_jobs (
+      id SERIAL PRIMARY KEY,
+      story_id TEXT NOT NULL,
+      scene_num TEXT NOT NULL,          -- zero-padded e.g. "01"
+      beat TEXT DEFAULT '',
+      video_prompt TEXT DEFAULT '',     -- full prompt used for this attempt
+      tts_text TEXT DEFAULT '',
+      primary_anchor TEXT DEFAULT '',
+      secondary_anchor TEXT DEFAULT '',
+      operation_id TEXT DEFAULT '',     -- Veo operation name
+      status TEXT DEFAULT 'pending',    -- pending|submitted|polling|done|filtered|failed|manual_pending
+      attempt INTEGER DEFAULT 1,        -- 1 = first try, 2 = after rewrite
+      error_type TEXT DEFAULT '',       -- content_filter|timeout|api_error
+      error_message TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (story_id, scene_num, attempt)
+    )
+  `
+  await sql`CREATE INDEX IF NOT EXISTS idx_scene_jobs_story ON scene_jobs (story_id)`
+  await sql`
     CREATE TABLE IF NOT EXISTS stories (
       story_id TEXT PRIMARY KEY,
       topic TEXT DEFAULT '',
@@ -236,6 +257,65 @@ export const storiesDb = {
   delete: async (storyId: string): Promise<void> => {
     await ensureDb()
     await sql`DELETE FROM stories WHERE story_id = ${storyId}`
+  },
+}
+
+// ─── Scene Jobs ───────────────────────────────────────────────────────────────
+
+export interface SceneJob {
+  id: number
+  story_id: string
+  scene_num: string
+  beat: string
+  video_prompt: string
+  tts_text: string
+  primary_anchor: string
+  secondary_anchor: string
+  operation_id: string
+  status: 'pending' | 'submitted' | 'polling' | 'done' | 'filtered' | 'failed' | 'manual_pending'
+  attempt: number
+  error_type: string
+  error_message: string
+  created_at: string
+  updated_at: string
+}
+
+export const sceneJobsDb = {
+  create: async (job: Pick<SceneJob, 'story_id' | 'scene_num' | 'beat' | 'video_prompt' | 'tts_text' | 'primary_anchor' | 'secondary_anchor' | 'attempt'>): Promise<SceneJob> => {
+    await ensureDb()
+    const [row] = await sql<SceneJob[]>`
+      INSERT INTO scene_jobs (story_id, scene_num, beat, video_prompt, tts_text, primary_anchor, secondary_anchor, attempt)
+      VALUES (${job.story_id}, ${job.scene_num}, ${job.beat}, ${job.video_prompt}, ${job.tts_text}, ${job.primary_anchor}, ${job.secondary_anchor}, ${job.attempt})
+      ON CONFLICT (story_id, scene_num, attempt) DO UPDATE SET
+        video_prompt = EXCLUDED.video_prompt,
+        status = 'pending',
+        updated_at = NOW()
+      RETURNING *
+    `
+    return row
+  },
+
+  update: async (storyId: string, sceneNum: string, attempt: number, updates: Partial<SceneJob>): Promise<void> => {
+    await ensureDb()
+    const now = new Date().toISOString()
+    if (updates.operation_id !== undefined) await sql`UPDATE scene_jobs SET operation_id = ${updates.operation_id}, updated_at = ${now} WHERE story_id = ${storyId} AND scene_num = ${sceneNum} AND attempt = ${attempt}`
+    if (updates.status !== undefined) await sql`UPDATE scene_jobs SET status = ${updates.status}, updated_at = ${now} WHERE story_id = ${storyId} AND scene_num = ${sceneNum} AND attempt = ${attempt}`
+    if (updates.error_type !== undefined) await sql`UPDATE scene_jobs SET error_type = ${updates.error_type}, error_message = ${updates.error_message ?? ''}, updated_at = ${now} WHERE story_id = ${storyId} AND scene_num = ${sceneNum} AND attempt = ${attempt}`
+  },
+
+  getByStory: async (storyId: string): Promise<SceneJob[]> => {
+    await ensureDb()
+    return sql<SceneJob[]>`SELECT * FROM scene_jobs WHERE story_id = ${storyId} ORDER BY scene_num, attempt`
+  },
+
+  getManualPending: async (storyId: string): Promise<SceneJob[]> => {
+    await ensureDb()
+    return sql<SceneJob[]>`SELECT * FROM scene_jobs WHERE story_id = ${storyId} AND status = 'manual_pending' ORDER BY scene_num`
+  },
+
+  deleteByStory: async (storyId: string): Promise<void> => {
+    await ensureDb()
+    await sql`DELETE FROM scene_jobs WHERE story_id = ${storyId}`
   },
 }
 

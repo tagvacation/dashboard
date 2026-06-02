@@ -173,31 +173,91 @@ Return JSON: { "topic": "...", "theme": "moral_karma|spiritual|family", "hook_id
   return { topic: parsed.topic, theme: parsed.theme, hook_idea: parsed.hook_idea }
 }
 
+const SCRIPT_JSON_EXAMPLE = `{
+  "story_id": "story_2026_06_02_123",
+  "title_hindi": "लालची सेठ की सीख",
+  "hook_caption": "सेठ का अहंकार टूटा",
+  "moral": "दूसरों की मदद करने से अपना भला होता है",
+  "time_of_day": "harsh bright noon",
+  "character_anchor": {
+    "description_en": "A portly merchant in his 50s wearing a bright saffron dhoti with gold border, crisp white kurta, thick black moustache, calculating dark eyes, heavy gold chain around neck, always counting coins",
+    "description_hi": "पचास साल का मोटा सेठ, केसरिया धोती में, सोने की चेन के साथ"
+  },
+  "secondary_character_anchor": {
+    "description_en": "A frail elderly woman in her 70s wearing a faded grey saree with white border, silver hair tied in a bun, kind wrinkled face, carrying a small earthen pot",
+    "description_hi": "सत्तर साल की दुबली बुढ़िया, धुंधली साड़ी में, मिट्टी का घड़ा लिए"
+  },
+  "scenes": [
+    {
+      "scene_num": 1,
+      "beat": "setup",
+      "video_prompt": "A portly merchant in his 50s wearing a bright saffron dhoti with gold border, crisp white kurta, thick black moustache, calculating dark eyes, heavy gold chain around neck, always counting coins. He sits cross-legged on a wooden platform outside his grain shop under harsh noon sun, counting gold coins into a brass bowl, expression smug and satisfied. Bright midday light casts sharp shadows, dust motes in the hot air, distant bazaar sounds. Pixar-inspired stylized 3D animation, warm soft lighting, expressive character faces, vibrant colors, smooth animation quality, Indian period village setting. No character voices or dialogue audio — ambient environmental sounds only. Vertical 9:16, no text or captions in frame, no logos or brand marks.",
+      "tts_text": "गाँव के सबसे अमीर सेठ रोज दोपहर को अपनी दुकान पर बैठकर सोने के सिक्के गिनते थे।",
+      "caption": "सेठ का घमंड"
+    },
+    {
+      "scene_num": 2,
+      "beat": "conflict",
+      "video_prompt": "A portly merchant in his 50s wearing a bright saffron dhoti with gold border, crisp white kurta, thick black moustache, calculating dark eyes, heavy gold chain around neck, always counting coins. Wide two-shot framing. A frail elderly woman in her 70s wearing a faded grey saree with white border, silver hair tied in a bun, kind wrinkled face, carrying a small earthen pot. The old woman stands at the shop entrance with hands folded, the merchant waves her away dismissively without looking up from his coins. Harsh noon light, dry dusty street behind them. Pixar-inspired stylized 3D animation, warm soft lighting, expressive character faces, vibrant colors, smooth animation quality, Indian period village setting. No character voices or dialogue audio — ambient environmental sounds only. Vertical 9:16, no text or captions in frame, no logos or brand marks.",
+      "tts_text": "एक गरीब बुढ़िया ने थोड़ा अनाज माँगा — सेठ ने हाथ के इशारे से भगा दिया।",
+      "caption": "निर्दयी सेठ"
+    }
+  ],
+  "total_scenes": 10
+}`
+
 export async function writeScript(storyId: string, topic: string, theme: string): Promise<Script> {
   const system = await getPrompt('script_writer')
   const user = `story_id: ${storyId}
 theme: ${theme}
 topic: ${topic}
 
-Generate 8-10 scenes (8 seconds each, 64-80 seconds total). Return ONLY the JSON object matching this schema exactly:
-{
-  "story_id": "${storyId}",
-  "title_hindi": "string (8-15 chars)",
-  "hook_caption": "string (Hindi ≤6 words)",
-  "moral": "string (Hindi 1 line)",
-  "character_anchor": { "description_en": "string", "description_hi": "string" },
-  "secondary_character_anchor": { "description_en": "string or empty", "description_hi": "string or empty" },
-  "scenes": [{ "scene_num": 1, "beat": "setup|conflict|rising_action|twist|resolution", "video_prompt": "English", "tts_text": "Hindi Devanagari", "caption": "Hindi ≤8 words" }],
-  "total_scenes": number
-}`
+Generate 8-10 scenes (8 seconds each, 64-80 seconds total).
+
+CRITICAL: Return ONLY valid JSON matching EXACTLY the structure below. No extra fields, no markdown, no explanation.
+
+REQUIRED OUTPUT STRUCTURE (follow this example):
+${SCRIPT_JSON_EXAMPLE}
+
+Your output must be a SINGLE JSON object with these exact keys:
+- story_id (string, use: "${storyId}")
+- title_hindi (string, 8-15 Hindi chars)
+- hook_caption (string, ≤6 Hindi words)
+- moral (string, 1 Hindi line)
+- time_of_day (string, emotional time choice)
+- character_anchor.description_en (30-60 words English, VERY specific clothing/face/age)
+- character_anchor.description_hi (Hindi version)
+- secondary_character_anchor.description_en (30-60 words or empty string)
+- secondary_character_anchor.description_hi (Hindi version or empty string)
+- scenes (array of 8-10 objects, each with: scene_num INTEGER, beat, video_prompt, tts_text, caption)
+- total_scenes (integer)`
 
   const raw = await callGemini(system, user)
-  const parsed = JSON.parse(raw)
 
-  const primaryAnchor = parsed.character_anchor?.description_en || ''
-  const secondaryAnchor = parsed.secondary_character_anchor?.description_en || ''
+  // Parse with validation
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new Error(`Gemini returned invalid JSON. Raw response: ${raw.slice(0, 200)}`)
+  }
 
-  const scenes: Scene[] = (parsed.scenes || []).map((s: Record<string, unknown>) => ({
+  // Validate required fields
+  if (!Array.isArray(parsed.scenes) || (parsed.scenes as unknown[]).length < 8) {
+    throw new Error(`Script needs 8-10 scenes, got ${Array.isArray(parsed.scenes) ? (parsed.scenes as unknown[]).length : 0}`)
+  }
+  if (!parsed.character_anchor || !(parsed.character_anchor as Record<string, unknown>).description_en) {
+    throw new Error('character_anchor.description_en is missing — script invalid')
+  }
+
+  const primaryAnchor = String((parsed.character_anchor as Record<string, string>).description_en || '')
+  const secondaryAnchor = String((parsed.secondary_character_anchor as Record<string, string>)?.description_en || '')
+
+  if (primaryAnchor.split(' ').length < 20) {
+    throw new Error(`character_anchor too short (${primaryAnchor.split(' ').length} words) — needs 30-60 words for Veo consistency`)
+  }
+
+  const scenes: Scene[] = (parsed.scenes as Record<string, unknown>[]).map(s => ({
     scene_num: String(s.scene_num).padStart(2, '0'),
     beat: String(s.beat || ''),
     video_prompt: String(s.video_prompt || ''),
@@ -208,8 +268,28 @@ Generate 8-10 scenes (8 seconds each, 64-80 seconds total). Return ONLY the JSON
     has_secondary: secondaryAnchor.length > 10,
   }))
 
+  // Validate each scene has required fields
+  for (const scene of scenes) {
+    if (!scene.video_prompt || scene.video_prompt.length < 50) {
+      throw new Error(`Scene ${scene.scene_num} video_prompt too short or missing`)
+    }
+    if (!scene.tts_text || !scene.tts_text.match(/[ऀ-ॿ]/)) {
+      throw new Error(`Scene ${scene.scene_num} tts_text missing or not in Hindi Devanagari`)
+    }
+  }
+
   if (scenes.length < 8) throw new Error(`Script only has ${scenes.length} scenes, need at least 8`)
-  return { ...parsed, scenes, total_scenes: scenes.length }
+
+  return {
+    story_id: String(parsed.story_id || storyId),
+    title_hindi: String(parsed.title_hindi || ''),
+    hook_caption: String(parsed.hook_caption || ''),
+    moral: String(parsed.moral || ''),
+    character_anchor: parsed.character_anchor as Script['character_anchor'],
+    secondary_character_anchor: (parsed.secondary_character_anchor || { description_en: '', description_hi: '' }) as Script['secondary_character_anchor'],
+    scenes,
+    total_scenes: scenes.length,
+  }
 }
 
 export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promise<string> {
