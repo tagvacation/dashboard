@@ -8,7 +8,7 @@ interface Clip { name: string; url: string; size: number }
 interface Story {
   story_id: string; topic: string; theme: string; status: string
   created_at: string; clips_generated_at: string; scenes_count: string
-  audio_url: string; notes: string; final_url: string
+  audio_url: string; notes: string; final_url: string; published_to: string
   clips: Clip[]; hasAudio: boolean; hasFinal: boolean
 }
 interface PipelineRun {
@@ -577,7 +577,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
       {/* YouTube */}
       <div className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100">
         <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">▶ YouTube Shorts</h3>
-        <YouTubePublish story={story} finalUrl={finalUrl} />
+        <YouTubePublish story={story} finalUrl={finalUrl} onUpdate={onUpdate} />
       </div>
 
       {/* Audio */}
@@ -648,57 +648,140 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
 
 // ─── YouTube Publish ───────────────────────────────────────────────────────────
 
-function YouTubePublish({ story, finalUrl }: { story: Story; finalUrl: string }) {
+function YouTubePublish({ story, finalUrl, onUpdate }: {
+  story: Story
+  finalUrl: string
+  onUpdate: (s: Story) => void
+}) {
+  // Parse existing YouTube URL from published_to field
+  const existingYtUrl = (() => {
+    try { return JSON.parse(story.published_to || '{}').youtube || '' }
+    catch { return '' }
+  })()
+
   const [title, setTitle] = useState(story.topic.slice(0, 90))
   const [description, setDescription] = useState(`${story.topic}\n\n#shorts #hindistory #moralstory #kathakar`)
   const [tags, setTags] = useState('shorts,hindi story,moral story,kathakar')
   const [uploading, setUploading] = useState(false)
-  const [result, setResult] = useState<{ url: string } | null>(null)
+  const [publishedUrl, setPublishedUrl] = useState(existingYtUrl)
   const [error, setError] = useState('')
 
-  const publish = async () => {
-    if (!finalUrl) { setError('Upload final reel first'); return }
-    setUploading(true); setError('')
-    const res = await fetch(`/api/stories/${story.story_id}/publish`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ platform: 'youtube', videoUrl: finalUrl, title, description, tags: tags.split(',').map(t => t.trim()) }),
-    })
-    const data = await res.json()
-    if (data.youtubeUrl) setResult({ url: data.youtubeUrl })
-    else setError(data.error || 'Upload failed')
-    setUploading(false)
-  }
-
-  if (result) return (
-    <div className="text-center py-4">
-      <div className="text-4xl mb-2">✅</div>
-      <p className="text-sm font-semibold text-gray-800 mb-2">Published to YouTube!</p>
-      <a href={result.url} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline break-all">{result.url}</a>
+  // Already published — show read-only card, no publish button
+  if (publishedUrl) return (
+    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-lg">✅</span>
+        <p className="text-sm font-semibold text-emerald-800">Published on YouTube</p>
+      </div>
+      <a href={publishedUrl} target="_blank" rel="noreferrer"
+        className="text-xs text-emerald-700 hover:text-emerald-900 hover:underline break-all block mb-3">
+        {publishedUrl}
+      </a>
+      <button
+        onClick={() => window.open(publishedUrl, '_blank')}
+        className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-colors">
+        ▶ Open on YouTube
+      </button>
     </div>
   )
 
+  const publish = async () => {
+    if (!finalUrl) { setError('Upload final reel first, then publish'); return }
+    setUploading(true); setError('')
+
+    try {
+      const res = await fetch(`/api/stories/${story.story_id}/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          platform: 'youtube',
+          videoUrl: finalUrl,
+          title,
+          description,
+          tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok || !data.youtubeUrl) {
+        // Show detailed error from YouTube API
+        const errMsg = data.error || `Upload failed (HTTP ${res.status})`
+        setError(errMsg)
+        setUploading(false)
+        return
+      }
+
+      // Success — update local state + parent story
+      setPublishedUrl(data.youtubeUrl)
+      const newPublishedTo = JSON.stringify({
+        ...(() => { try { return JSON.parse(story.published_to || '{}') } catch { return {} } })(),
+        youtube: data.youtubeUrl,
+      })
+      onUpdate({ ...story, status: 'published', published_to: newPublishedTo })
+
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Network error — check connection and retry')
+    }
+
+    setUploading(false)
+  }
+
   return (
     <div className="space-y-3">
+      {!finalUrl && (
+        <div className="flex items-center gap-2 px-3 py-2.5 bg-amber-50 border border-amber-200 rounded-xl">
+          <span className="text-base">⚠️</span>
+          <p className="text-xs text-amber-700 font-medium">Upload final reel above before publishing</p>
+        </div>
+      )}
+
       <div>
-        <div className="flex justify-between mb-1"><label className="text-xs text-gray-500">Title</label><span className="text-xs text-gray-400">{title.length}/100</span></div>
+        <div className="flex justify-between mb-1">
+          <label className="text-xs text-gray-500 font-medium">Title</label>
+          <span className={`text-xs ${title.length > 90 ? 'text-red-500' : 'text-gray-400'}`}>{title.length}/100</span>
+        </div>
         <input value={title} onChange={e => setTitle(e.target.value)} maxLength={100}
           className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors" />
       </div>
+
       <div>
-        <label className="text-xs text-gray-500 block mb-1">Description</label>
+        <label className="text-xs text-gray-500 font-medium block mb-1">Description</label>
         <textarea value={description} onChange={e => setDescription(e.target.value)} rows={3}
           className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors resize-none" />
       </div>
+
       <div>
-        <label className="text-xs text-gray-500 block mb-1">Tags (comma separated)</label>
+        <label className="text-xs text-gray-500 font-medium block mb-1">Tags (comma separated)</label>
         <input value={tags} onChange={e => setTags(e.target.value)}
           className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-red-400 transition-colors" />
       </div>
-      {error && <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-xl">{error}</p>}
-      {!finalUrl && <p className="text-xs text-amber-600 bg-amber-50 px-3 py-2 rounded-xl">⚠ Upload final reel first</p>}
+
+      {/* Error — detailed, not generic */}
+      {error && (
+        <div className="px-3 py-2.5 bg-red-50 border border-red-200 rounded-xl">
+          <p className="text-xs font-semibold text-red-700 mb-0.5">Upload failed</p>
+          <p className="text-xs text-red-600 break-words">{error}</p>
+        </div>
+      )}
+
       <button onClick={publish} disabled={uploading || !finalUrl}
-        className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white rounded-xl text-sm font-semibold transition-colors">
-        {uploading ? '⟳ Uploading...' : '▶ Publish to YouTube Shorts'}
+        className={`w-full py-3 rounded-xl text-sm font-semibold transition-all
+          ${uploading
+            ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+            : !finalUrl
+              ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+              : 'bg-red-600 hover:bg-red-700 active:bg-red-800 text-white shadow-sm'
+          }`}>
+        {uploading ? (
+          <span className="flex items-center justify-center gap-2">
+            <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+            Uploading to YouTube...
+          </span>
+        ) : '▶ Publish to YouTube Shorts'}
       </button>
     </div>
   )
