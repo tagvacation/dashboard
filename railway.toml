@@ -12,5 +12,4 @@ startCommand = "npm start"
 healthcheckPath = "/api/health"
 restartPolicyType = "ON_FAILURE"
 
-[[volumes]]
-mountPath = "/data"
+# PostgreSQL — set DATABASE_URL in Railway environment variables

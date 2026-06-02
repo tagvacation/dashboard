@@ -93,7 +93,7 @@ export async function submitAllScenes(
 // Poll all pending operations until done. Returns base64 per sceneNum.
 export async function pollAllScenes(
   operationIds: Record<string, string>,
-  onProgress: (sceneNum: string, status: 'done' | 'filtered' | 'polling') => void,
+  onProgress: (sceneNum: string, status: 'done' | 'filtered' | 'polling') => void | Promise<void>,
   onLog: (msg: string) => void,
   maxAttempts = 20,
 ): Promise<{ completed: Record<string, string>; filtered: string[] }> {
@@ -113,17 +113,17 @@ export async function pollAllScenes(
         try {
           const result = await pollVeoOperation(opId)
           if (!result.done) {
-            onProgress(sceneNum, 'polling')
+            await onProgress(sceneNum, 'polling')
             return
           }
           if (result.filtered) {
             onLog(`  Scene ${sceneNum} filtered: ${result.error}`)
-            onProgress(sceneNum, 'filtered')
+            await onProgress(sceneNum, 'filtered')
             filtered.push(sceneNum)
             delete pending[sceneNum]
           } else {
             onLog(`  Scene ${sceneNum} done ✓`)
-            onProgress(sceneNum, 'done')
+            await onProgress(sceneNum, 'done')
             completed[sceneNum] = result.base64!
             delete pending[sceneNum]
           }

@@ -1,6 +1,6 @@
 import { Storage } from '@google-cloud/storage'
 import { google } from 'googleapis'
-import db from '../db'
+import { pipelineDb } from '../db'
 import { pickTopic, writeScript } from './gemini'
 import { submitAllScenes, pollAllScenes } from './veo'
 import { generateFullNarration } from './tts'
@@ -11,7 +11,7 @@ const storage = new Storage({ credentials })
 const bucket = storage.bucket(process.env.GCS_BUCKET!)
 const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
 
-// ─── Sheets helper (column-aware update) ─────────────────────────────────────
+// ─── Sheets helpers ───────────────────────────────────────────────────────────
 
 async function updateSheet(storyId: string, updates: Record<string, string>) {
   const auth = new google.auth.GoogleAuth({
@@ -22,18 +22,15 @@ async function updateSheet(storyId: string, updates: Record<string, string>) {
   const sheetId = process.env.SHEET_ID!
   const tab = process.env.SHEET_TAB || 'Sheet2'
 
-  // Read header row to find column indices
   const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!1:1` })
   const headers: string[] = (headerRes.data.values?.[0] || []) as string[]
 
-  // Find the row with this story_id
   const allRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!A:A` })
   const idCol = allRes.data.values || []
   const rowIdx = idCol.findIndex((r) => r[0] === storyId)
   if (rowIdx === -1) return
-  const rowNum = rowIdx + 1 // 1-indexed
+  const rowNum = rowIdx + 1
 
-  // Build batch update
   const data = Object.entries(updates)
     .filter(([key]) => headers.includes(key))
     .map(([key, val]) => {
@@ -62,7 +59,6 @@ async function appendToSheet(row: Record<string, string>) {
   const headerRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!1:1` })
   const headers: string[] = (headerRes.data.values?.[0] || []) as string[]
 
-  // Check if story already exists — if yes, just update instead of appending duplicate
   const allIdRes = await sheets.spreadsheets.values.get({ spreadsheetId: sheetId, range: `${tab}!A:A` })
   const existing = (allIdRes.data.values || []).findIndex((r) => r[0] === row.story_id)
   if (existing !== -1) {
@@ -81,7 +77,7 @@ async function appendToSheet(row: Record<string, string>) {
 
 // ─── GCS helpers ─────────────────────────────────────────────────────────────
 
-async function uploadBuffer(path: string, buf: Buffer, mimeType: string) {
+async function uploadBuffer(path: string, buf: Buffer, mimeType: string): Promise<string> {
   const file = bucket.file(path)
   await file.save(buf, { contentType: mimeType })
   return `${PUBLIC_BASE}/${path}`
@@ -92,41 +88,20 @@ async function gcsExists(path: string): Promise<boolean> {
   return exists
 }
 
-// ─── DB helpers ──────────────────────────────────────────────────────────────
-
-function logStep(storyId: string, msg: string) {
-  const run = db.prepare('SELECT log FROM pipeline_runs WHERE story_id = ?').get(storyId) as { log: string } | undefined
-  const logs: string[] = run ? JSON.parse(run.log || '[]') : []
-  logs.push(`[${new Date().toISOString()}] ${msg}`)
-  db.prepare('UPDATE pipeline_runs SET log = ?, updated_at = ? WHERE story_id = ?')
-    .run(JSON.stringify(logs), new Date().toISOString(), storyId)
-}
-
-function setStep(storyId: string, step: PipelineStep, extra?: Record<string, string>) {
-  const now = new Date().toISOString()
-  if (!extra || Object.keys(extra).length === 0) {
-    db.prepare('UPDATE pipeline_runs SET status = ?, updated_at = ? WHERE story_id = ?').run(step, now, storyId)
-    return
-  }
-  // Build SET clause dynamically — only allow known safe column names
-  const SAFE_COLS = new Set(['topic', 'theme', 'script_json', 'operation_ids', 'completed_clips', 'filtered_clips', 'error'])
-  const filtered = Object.entries(extra).filter(([k]) => SAFE_COLS.has(k))
-  if (filtered.length === 0) {
-    db.prepare('UPDATE pipeline_runs SET status = ?, updated_at = ? WHERE story_id = ?').run(step, now, storyId)
-    return
-  }
-  const setClauses = ['status = ?', 'updated_at = ?', ...filtered.map(([k]) => `${k} = ?`)]
-  const values: unknown[] = [step, now, ...filtered.map(([, v]) => v), storyId]
-  db.prepare(`UPDATE pipeline_runs SET ${setClauses.join(', ')} WHERE story_id = ?`).run(...values)
-}
-
 // ─── Main runner ─────────────────────────────────────────────────────────────
 
 export async function runPipeline(storyId: string) {
-  const log = (msg: string) => { logStep(storyId, msg); console.log(`[${storyId}] ${msg}`) }
+  const log = async (msg: string) => {
+    await pipelineDb.appendLog(storyId, msg)
+    console.log(`[${storyId}] ${msg}`)
+  }
+
+  const setStep = async (step: PipelineStep, extra?: Parameters<typeof pipelineDb.setStep>[2]) => {
+    await pipelineDb.setStep(storyId, step, extra)
+  }
 
   try {
-    let run = db.prepare('SELECT * FROM pipeline_runs WHERE story_id = ?').get(storyId) as Record<string, string>
+    let run = await pipelineDb.get(storyId)
     if (!run) throw new Error('Pipeline run not found in DB')
 
     // ── Step 1: Pick Topic ──────────────────────────────────────────────────
@@ -134,21 +109,17 @@ export async function runPipeline(storyId: string) {
     let theme = run.theme
 
     if (!topic) {
-      log('Picking topic...')
-      setStep(storyId, 'topic')
+      await log('Picking topic...')
+      await setStep('topic')
       const result = await pickTopic(storyId)
       topic = result.topic
       theme = result.theme
-      setStep(storyId, 'topic', { topic, theme })
-      log(`Topic: ${topic}`)
+      await setStep('topic', { topic, theme })
+      await log(`Topic: ${topic}`)
 
-      // Add to sheet
       await appendToSheet({
-        story_id: storyId,
-        topic,
-        theme,
-        status: 'generating',
-        target_account: 'primary',
+        story_id: storyId, topic, theme,
+        status: 'generating', target_account: 'primary',
         created_at: new Date().toISOString(),
       })
     }
@@ -157,53 +128,48 @@ export async function runPipeline(storyId: string) {
     let script: Script
     if (run.script_json) {
       script = JSON.parse(run.script_json)
-      log(`Loaded script from DB (${script.total_scenes} scenes)`)
+      await log(`Script loaded (${script.total_scenes} scenes)`)
     } else {
-      log('Writing script...')
-      setStep(storyId, 'script')
+      await log('Writing script...')
+      await setStep('script')
       script = await writeScript(storyId, topic, theme)
-      setStep(storyId, 'script', { script_json: JSON.stringify(script) })
-      log(`Script written: "${script.title_hindi}" — ${script.total_scenes} scenes`)
+      await setStep('script', { script_json: JSON.stringify(script) })
+      await log(`Script ready: "${script.title_hindi}" — ${script.total_scenes} scenes`)
     }
 
     // ── Step 3: Generate Audio ──────────────────────────────────────────────
     const audioPath = `stories/${storyId}/audio/full_narration.mp3`
-    const audioExists = await gcsExists(audioPath)
-
-    if (!audioExists) {
-      log('Generating TTS audio...')
-      setStep(storyId, 'audio')
+    if (!(await gcsExists(audioPath))) {
+      await log('Generating TTS audio...')
+      await setStep('audio')
       const audioBuffer = await generateFullNarration(script.scenes)
       const audioUrl = await uploadBuffer(audioPath, audioBuffer, 'audio/mpeg')
-      log(`Audio uploaded: ${audioUrl}`)
-
-      // Update sheet with meta
+      await log(`Audio uploaded`)
       await updateSheet(storyId, {
         scenes_count: String(script.total_scenes),
         storage_path: `stories/${storyId}/`,
         audio_url: audioUrl,
       })
     } else {
-      log('Audio already exists, skipping TTS')
+      await log('Audio exists, skipping TTS')
     }
 
     // ── Step 4: Submit scenes to Veo ────────────────────────────────────────
-    let operationIds: Record<string, string> = run.operation_ids ? JSON.parse(run.operation_ids) : {}
-    const completedClips: string[] = run.completed_clips ? JSON.parse(run.completed_clips) : []
-    const filteredClips: string[] = run.filtered_clips ? JSON.parse(run.filtered_clips) : []
+    let operationIds: Record<string, string> = run.operation_ids || {}
+    const completedClips: string[] = run.completed_clips || []
+    const filteredClips: string[] = run.filtered_clips || []
 
-    // Only submit scenes that haven't been submitted or completed
     const doneScenes = new Set([...completedClips, ...filteredClips, ...Object.keys(operationIds)])
     const scenesToSubmit = script.scenes.filter(s => !doneScenes.has(s.scene_num))
 
     if (scenesToSubmit.length > 0) {
-      log(`Submitting ${scenesToSubmit.length} scenes to Veo...`)
-      setStep(storyId, 'veo_submit')
-      const newOps = await submitAllScenes(scenesToSubmit, log)
+      await log(`Submitting ${scenesToSubmit.length} scenes to Veo...`)
+      await setStep('veo_submit')
+      const newOps = await submitAllScenes(scenesToSubmit, (msg) => { log(msg).catch(console.error) })
       Object.assign(operationIds, newOps)
-      setStep(storyId, 'veo_submit', { operation_ids: JSON.stringify(operationIds) })
+      await setStep('veo_submit', { operation_ids: operationIds })
     } else {
-      log('All scenes already submitted')
+      await log('All scenes already submitted')
     }
 
     // ── Step 5: Poll Veo + Upload clips ─────────────────────────────────────
@@ -212,47 +178,44 @@ export async function runPipeline(storyId: string) {
     )
 
     if (Object.keys(pendingOps).length > 0) {
-      log(`Polling ${Object.keys(pendingOps).length} pending scenes...`)
-      setStep(storyId, 'veo_poll')
+      await log(`Polling ${Object.keys(pendingOps).length} scenes...`)
+      await setStep('veo_poll')
 
       const { completed, filtered } = await pollAllScenes(
         pendingOps,
-        (sceneNum, status) => {
-          const run = db.prepare('SELECT * FROM pipeline_runs WHERE story_id = ?').get(storyId) as Record<string, string>
-          const clips: string[] = run.completed_clips ? JSON.parse(run.completed_clips) : []
-          const filtd: string[] = run.filtered_clips ? JSON.parse(run.filtered_clips) : []
-
-          if (status === 'done' && !clips.includes(sceneNum)) clips.push(sceneNum)
-          if (status === 'filtered' && !filtd.includes(sceneNum)) filtd.push(sceneNum)
-
-          db.prepare('UPDATE pipeline_runs SET completed_clips = ?, filtered_clips = ?, updated_at = ? WHERE story_id = ?')
-            .run(JSON.stringify(clips), JSON.stringify(filtd), new Date().toISOString(), storyId)
+        async (sceneNum, status) => {
+          // Re-fetch latest state for accurate updates
+          const latest = await pipelineDb.get(storyId)
+          const clips: string[] = latest?.completed_clips || []
+          const filtd: string[] = latest?.filtered_clips || []
+          if (status === 'done' && !clips.includes(sceneNum)) {
+            await pipelineDb.setStep(storyId, 'veo_poll', { completed_clips: [...clips, sceneNum] })
+          }
+          if (status === 'filtered' && !filtd.includes(sceneNum)) {
+            await pipelineDb.setStep(storyId, 'veo_poll', { filtered_clips: [...filtd, sceneNum] })
+          }
         },
-        log,
+        (msg) => { log(msg).catch(console.error) },
       )
 
-      // Upload completed clips
-      log(`Uploading ${Object.keys(completed).length} clips to GCS...`)
+      await log(`Uploading ${Object.keys(completed).length} clips...`)
       await Promise.all(
         Object.entries(completed).map(async ([sceneNum, base64]) => {
           const clipPath = `stories/${storyId}/clips/scene_${sceneNum}.mp4`
-          const clipExists = await gcsExists(clipPath)
-          if (!clipExists) {
-            const buf = Buffer.from(base64, 'base64')
-            await uploadBuffer(clipPath, buf, 'video/mp4')
-            log(`  Uploaded scene_${sceneNum}.mp4`)
+          if (!(await gcsExists(clipPath))) {
+            await uploadBuffer(clipPath, Buffer.from(base64, 'base64'), 'video/mp4')
+            await log(`  Uploaded scene_${sceneNum}.mp4`)
           }
         })
       )
-
       filteredClips.push(...filtered)
     } else {
-      log('All clips already completed')
+      await log('All clips already uploaded')
     }
 
     // ── Step 6: Complete ────────────────────────────────────────────────────
-    log('Pipeline complete!')
-    setStep(storyId, 'complete')
+    await log('Pipeline complete!')
+    await setStep('complete')
     await updateSheet(storyId, {
       status: 'clips_ready',
       clips_generated_at: new Date().toISOString(),
@@ -262,10 +225,10 @@ export async function runPipeline(storyId: string) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error(`[${storyId}] Pipeline failed:`, msg)
-    logStep(storyId, `ERROR: ${msg}`)
-    setStep(storyId, 'failed', { error: msg })
+    await pipelineDb.appendLog(storyId, `ERROR: ${msg}`)
+    await pipelineDb.setStep(storyId, 'failed', { error: msg })
     try {
-      await updateSheet(storyId, { status: 'failed', notes: `Pipeline error: ${msg}` })
-    } catch { /* ignore sheet error */ }
+      await updateSheet(storyId, { status: 'failed', notes: `Error: ${msg}` })
+    } catch { /* ignore */ }
   }
 }

@@ -17,9 +17,7 @@ export async function GET() {
     is_default: true,
   }
 
-  // Additional channels from DB
-  const dbChannels = channelsDb.getAll()
-
+  const dbChannels = await channelsDb.getAll()
   return NextResponse.json({ channels: [defaultChannel, ...dbChannels] })
 }
 
@@ -32,7 +30,7 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const channel = channelsDb.create({
+    const channel = await channelsDb.create({
       id: id.toLowerCase().replace(/\s+/g, '_'),
       name, emoji: emoji || '📺',
       sheet_id, sheet_tab: sheet_tab || 'Sheet2',
@@ -40,7 +38,7 @@ export async function POST(req: NextRequest) {
       yt_refresh_token, yt_client_id, yt_client_secret, yt_redirect_uri,
     })
     return NextResponse.json({ channel })
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message }, { status: 500 })
+  } catch (e: unknown) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 })
   }
 }

@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server'
-import db from '@/lib/db'
+import { pipelineDb } from '@/lib/db'
 import { runPipeline } from '@/lib/pipeline/runner'
 
 export const dynamic = 'force-dynamic'
-
 
 function generateStoryId() {
   const now = new Date()
@@ -16,19 +15,13 @@ function generateStoryId() {
 
 export async function POST() {
   const storyId = generateStoryId()
-
-  // Create pipeline run record
-  db.prepare(`
-    INSERT INTO pipeline_runs (story_id, status, created_at, updated_at)
-    VALUES (?, 'init', ?, ?)
-  `).run(storyId, new Date().toISOString(), new Date().toISOString())
+  await pipelineDb.create(storyId)
 
   // Start pipeline in background — don't await
-  runPipeline(storyId).catch(err => {
+  runPipeline(storyId).catch(async (err) => {
     console.error(`Pipeline ${storyId} crashed:`, err)
     try {
-      db.prepare("UPDATE pipeline_runs SET status = 'failed', error = ?, updated_at = ? WHERE story_id = ?")
-        .run(String(err), new Date().toISOString(), storyId)
+      await pipelineDb.setStep(storyId, 'failed', { error: String(err) })
     } catch { /* ignore */ }
   })
 
