@@ -2015,13 +2015,18 @@ function PromptsSettings() {
 // ── Schedule Settings ────────────────────────────────────────────────────────
 
 function ScheduleSettings() {
-  const [posts, setPosts] = useState<{ id: number; story_id: string; platform: string; scheduled_at: string; status: string; result_url: string; error: string; topic?: string }[]>([])
+  const [posts, setPosts] = useState<{ id: number; story_id: string; platform: string; scheduled_at: string; status: string; result_url: string; error: string; title?: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [deleting, setDeleting] = useState<number | null>(null)
+  const [running, setRunning] = useState(false)
+  const [runResult, setRunResult] = useState<{ processed: number; message?: string; results?: { status: string; url?: string; error?: string }[] } | null>(null)
 
-  useEffect(() => {
+  const loadPosts = () => {
+    setLoading(true)
     fetch('/api/schedule').then(r => r.json()).then(d => { setPosts(d.posts || []); setLoading(false) })
-  }, [])
+  }
+
+  useEffect(() => { loadPosts() }, [])
 
   const remove = async (id: number) => {
     setDeleting(id)
@@ -2030,50 +2035,117 @@ function ScheduleSettings() {
     setDeleting(null)
   }
 
-  const PLATFORM_ICON: Record<string, string> = { youtube: '▶', instagram: '📸', facebook: '👥' }
-  const STATUS_COLOR: Record<string, string> = {
-    pending: 'bg-amber-50 text-amber-700', posted: 'bg-emerald-50 text-emerald-700',
-    failed: 'bg-red-50 text-red-700', processing: 'bg-blue-50 text-blue-700',
+  const runNow = async () => {
+    setRunning(true); setRunResult(null)
+    const res = await fetch('/api/cron/run', { method: 'POST' })
+    const data = await res.json()
+    setRunResult(data)
+    setRunning(false)
+    loadPosts() // refresh list
   }
 
-  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading schedule...</div>
+  const STATUS_COLOR: Record<string, string> = {
+    pending: 'bg-amber-100 text-amber-700',
+    posted: 'bg-emerald-100 text-emerald-700',
+    failed: 'bg-red-100 text-red-600',
+    processing: 'bg-blue-100 text-blue-600',
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading...</div>
 
   return (
     <div className="space-y-3">
-      <div className="flex justify-between items-center">
-        <p className="text-xs text-gray-500">Scheduled posts. Cron runs every 5 min: <code className="bg-gray-100 px-1 rounded">POST /api/cron</code></p>
-        <a href="/api/cron" target="_blank" className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs font-medium">▶ Run now</a>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-gray-700">Scheduled Posts</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            Auto-processes when Railway cron calls <code className="bg-gray-100 px-1 rounded font-mono">POST /api/cron</code>
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={loadPosts} className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-xl text-xs font-medium">↺</button>
+          <button onClick={runNow} disabled={running}
+            className="px-3 py-1.5 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5">
+            {running ? (
+              <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Running...</>
+            ) : '▶ Run Now'}
+          </button>
+        </div>
       </div>
 
+      {/* Run result */}
+      {runResult && (
+        <div className={`rounded-xl px-4 py-3 text-xs ${runResult.processed > 0 ? 'bg-emerald-50 border border-emerald-200' : 'bg-gray-50 border border-gray-200'}`}>
+          {runResult.message ? (
+            <p className="text-gray-600">{runResult.message}</p>
+          ) : (
+            <div>
+              <p className="font-semibold text-gray-700 mb-2">Processed {runResult.processed} post(s):</p>
+              {(runResult.results || []).map((r, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className={`px-1.5 py-0.5 rounded font-medium ${r.status === 'posted' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-600'}`}>
+                    {r.status}
+                  </span>
+                  {r.url && <a href={r.url} target="_blank" rel="noreferrer" className="text-indigo-500 hover:underline truncate">{r.url}</a>}
+                  {r.error && <span className="text-red-600">{r.error}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Railway cron setup info */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs space-y-1">
+        <p className="font-semibold text-amber-800">Railway Cron Setup Required</p>
+        <p className="text-amber-700">Add these in Railway Dashboard → New Service → Cron Job:</p>
+        <div className="bg-amber-100 rounded-lg px-3 py-2 font-mono text-amber-900 space-y-0.5">
+          <p>Command: <span className="select-all">curl -X POST $&#123;RAILWAY_STATIC_URL&#125;/api/cron -H &quot;x-cron-secret: $&#123;CRON_SECRET&#125;&quot;</span></p>
+          <p>Schedule: <span className="select-all">* * * * *</span></p>
+        </div>
+        <p className="text-amber-600">Also add <code className="bg-amber-100 px-1 rounded">CRON_SECRET</code> env var in both services with same value.</p>
+      </div>
+
+      {/* Posts list */}
       {posts.length === 0 ? (
-        <div className="text-center py-12 text-gray-400">
-          <p className="text-4xl mb-2">📅</p>
-          <p className="text-sm">No scheduled posts</p>
-          <p className="text-xs mt-1">Schedule from any story's detail page</p>
+        <div className="bg-white rounded-2xl border border-gray-200/60 py-10 text-center">
+          <p className="text-3xl mb-2">📅</p>
+          <p className="text-sm text-gray-500">No scheduled posts</p>
+          <p className="text-xs text-gray-400 mt-1">Go to a story → YouTube tab → Schedule for Later</p>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="bg-white rounded-2xl border border-gray-200/60 overflow-hidden divide-y divide-gray-50">
           {posts.map(post => (
-            <div key={post.id} className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3">
-              <div className={`w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0 ${post.platform === 'youtube' ? 'bg-red-50' : post.platform === 'instagram' ? 'bg-pink-50' : 'bg-blue-50'}`}>
-                {PLATFORM_ICON[post.platform] || '📤'}
+            <div key={post.id} className="px-4 py-3.5 flex items-center gap-3">
+              <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0 ${
+                post.platform === 'youtube' ? 'bg-red-50 text-red-500' : 'bg-gray-50 text-gray-400'
+              }`}>
+                {post.platform === 'youtube' ? '▶' : '📤'}
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm text-gray-800 font-medium truncate">{post.topic || post.story_id}</p>
-                <div className="flex items-center gap-2 mt-0.5">
+                <p className="text-sm font-medium text-gray-800 truncate">{post.title || post.story_id}</p>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
                   <span className="text-xs text-gray-400">
-                    {new Date(post.scheduled_at).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                    {new Date(post.scheduled_at).toLocaleString('en-IN', {
+                      weekday: 'short', day: 'numeric', month: 'short',
+                      hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata'
+                    })} IST
                   </span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[post.status] || 'bg-gray-50 text-gray-500'}`}>
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_COLOR[post.status] || 'bg-gray-100 text-gray-500'}`}>
                     {post.status}
                   </span>
                 </div>
-                {post.result_url && <a href={post.result_url} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline">{post.result_url}</a>}
-                {post.error && <p className="text-xs text-red-500 mt-0.5">{post.error}</p>}
+                {post.result_url && (
+                  <a href={post.result_url} target="_blank" rel="noreferrer" className="text-xs text-indigo-500 hover:underline mt-0.5 block truncate">
+                    ▶ {post.result_url}
+                  </a>
+                )}
+                {post.error && <p className="text-xs text-red-500 mt-0.5">⚠ {post.error}</p>}
               </div>
               {post.status === 'pending' && (
                 <button onClick={() => remove(post.id)} disabled={deleting === post.id}
-                  className="text-xs text-gray-400 hover:text-red-500 transition-colors shrink-0 disabled:opacity-50">
+                  className="shrink-0 text-xs text-gray-400 hover:text-red-500 px-2 py-1 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50">
                   {deleting === post.id ? '...' : 'Cancel'}
                 </button>
               )}
