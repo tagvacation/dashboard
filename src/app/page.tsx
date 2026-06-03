@@ -912,11 +912,17 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
   const [expanded, setExpanded] = useState<string | null>(null)
   const [retrying, setRetrying] = useState<string | null>(null)
   const [editingPrompt, setEditingPrompt] = useState<{ key: string; value: string } | null>(null)
+  const [retryCred, setRetryCred] = useState<string>('default')
+  const [credList, setCredList] = useState<{ id: string; name: string }[]>([])
 
   const load = async () => {
     setLoading(true)
-    const res = await fetch(`/api/stories/${storyId}/scenes`)
-    if (res.ok) setJobs((await res.json()).scenes || [])
+    const [scenesRes, credsRes] = await Promise.all([
+      fetch(`/api/stories/${storyId}/scenes`),
+      fetch('/api/credentials'),
+    ])
+    if (scenesRes.ok) setJobs((await scenesRes.json()).scenes || [])
+    if (credsRes.ok) setCredList((await credsRes.json()).credentials || [])
     setLoading(false)
   }
 
@@ -928,7 +934,7 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
     const res = await fetch(`/api/stories/${storyId}/scenes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene_num: job.scene_num, video_prompt: promptToUse }),
+      body: JSON.stringify({ scene_num: job.scene_num, video_prompt: promptToUse, credential_id: retryCred }),
     })
     const data = await res.json()
     if (res.ok) { onClipGenerated(); await load() }
@@ -964,7 +970,7 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
       const res = await fetch(`/api/stories/${storyId}/scenes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene_num: job.scene_num, video_prompt: job.video_prompt }),
+        body: JSON.stringify({ scene_num: job.scene_num, video_prompt: job.video_prompt, credential_id: retryCred }),
       })
       if (res.ok) await load()
       else console.error(`Retry failed for scene ${job.scene_num}`)
@@ -979,24 +985,43 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
   return (
     <div className="space-y-3">
       {/* Summary bar */}
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-sm font-semibold text-gray-700">{Object.keys(byScene).length} scenes</span>
-        {needsRetry > 0 ? (
-          <>
+      <div className="space-y-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-gray-700">{Object.keys(byScene).length} scenes</span>
+          {needsRetry > 0 ? (
             <span className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full font-semibold">
               ⚠ {needsRetry} need retry
             </span>
+          ) : jobs.length > 0 ? (
+            <span className="text-xs text-emerald-500 font-medium">All scenes OK ✓</span>
+          ) : null}
+          <button onClick={load} className="ml-auto text-xs text-gray-400 hover:text-gray-600">↺ Refresh</button>
+        </div>
+
+        {/* Account selector + retry all — only show when there are pending scenes */}
+        {needsRetry > 0 && (
+          <div className="flex items-center gap-2 flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
+            <span className="text-xs text-gray-500 font-medium shrink-0">Account:</span>
+            <div className="flex gap-1.5 flex-wrap flex-1">
+              {credList.map(cred => (
+                <button key={cred.id} onClick={() => setRetryCred(cred.id)}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${
+                    retryCred === cred.id
+                      ? 'bg-[#111111] text-white border-[#111111]'
+                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
+                  }`}>
+                  {cred.name}
+                </button>
+              ))}
+            </div>
             <button onClick={retryAll} disabled={retrying === 'all'}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-colors">
+              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold">
               {retrying === 'all' ? (
-                <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Retrying {needsRetry}...</>
-              ) : `↺ Retry All ${needsRetry} Scenes`}
+                <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Retrying...</>
+              ) : `↺ Retry All ${needsRetry}`}
             </button>
-          </>
-        ) : jobs.length > 0 ? (
-          <span className="text-xs text-emerald-500 font-medium">All scenes OK ✓</span>
-        ) : null}
-        <button onClick={load} className="ml-auto text-xs text-gray-400 hover:text-gray-600">↺ Refresh</button>
+          </div>
+        )}
       </div>
 
       {jobs.length === 0 ? (
