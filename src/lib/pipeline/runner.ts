@@ -123,11 +123,25 @@ async function processAllScenes(
     })
   ))
 
-  await log(`Submitting ${scenes.length} scenes to Veo in parallel...`)
+  // Semaphore: max 3 concurrent Veo requests to avoid 429 quota exceeded
+  const MAX_CONCURRENT = 3
+  let active = 0
+  const queue: (() => void)[] = []
+  const acquire = () => new Promise<void>(resolve => {
+    if (active < MAX_CONCURRENT) { active++; resolve() }
+    else queue.push(() => { active++; resolve() })
+  })
+  const release = () => {
+    active--
+    const next = queue.shift()
+    if (next) next()
+  }
 
-  // Process all scenes concurrently — same as n8n parallel branches
+  await log(`Submitting ${scenes.length} scenes to Veo (max ${MAX_CONCURRENT} concurrent)...`)
+
   const results = await Promise.allSettled(
     scenes.map(async (scene): Promise<SceneResult | null> => {
+      await acquire() // wait for slot
       await sceneJobsDb.update(storyId, scene.scene_num, 1, { status: 'submitted' })
 
       try {
@@ -135,6 +149,7 @@ async function processAllScenes(
         const base64 = await submitAndPoll(scene.video_prompt, ctx)
         await sceneJobsDb.update(storyId, scene.scene_num, 1, { status: 'done' })
         await log(`  ✓ Scene ${scene.scene_num} done`)
+        release()
         return { sceneNum: scene.scene_num, base64 }
 
       } catch (err: unknown) {
@@ -148,9 +163,9 @@ async function processAllScenes(
         })
 
         if (!isFilter) {
-          // Hard failure — not a filter issue, mark manual_pending immediately
           await log(`  ✗ Scene ${scene.scene_num} failed: ${e.message}`)
           await sceneJobsDb.update(storyId, scene.scene_num, 1, { status: 'manual_pending' })
+          release()
           return null
         }
 
@@ -186,6 +201,7 @@ async function processAllScenes(
             error_message: re.message,
           })
           await log(`  ✗ Scene ${scene.scene_num} still filtered after retry — saved for manual generation`)
+          release()
           return null
         }
       }

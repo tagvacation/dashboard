@@ -191,17 +191,17 @@ function buildVeoPrompt(
     action = action.slice(secondaryAnchor.length).trim()
   }
 
-  // Strip style suffix (everything from STYLE_SUFFIX start)
-  const styleIdx = action.indexOf(STYLE_SUFFIX.slice(0, 30))
-  if (styleIdx !== -1) action = action.slice(0, styleIdx).trim()
-
-  // Also strip "Pixar-inspired" trailing suffix
-  const pixarIdx = action.indexOf('Pixar-inspired')
-  if (pixarIdx !== -1) action = action.slice(0, pixarIdx).trim()
-
-  // Strip trailing "Vertical 9:16..."
-  const vertIdx = action.indexOf('Vertical 9:16')
-  if (vertIdx !== -1) action = action.slice(0, vertIdx).trim()
+  // Strip ALL style/suffix content — find first style keyword and truncate
+  const STYLE_MARKERS = [
+    'Pixar-inspired', 'Warm glowing particle', 'Wide-angle cinematic lens',
+    'No character voices', 'ambient sounds only', 'Vertical 9:16',
+    'cinematic lens', 'Magical realism', 'Epic cinematic', 'Bright pop-art',
+    'comic book style', 'animation quality', 'No character voices',
+  ]
+  for (const marker of STYLE_MARKERS) {
+    const idx = action.indexOf(marker)
+    if (idx !== -1) { action = action.slice(0, idx).trim(); break }
+  }
 
   // Rebuild with guaranteed structure
   let prompt = primaryAnchor
