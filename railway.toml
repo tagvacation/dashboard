@@ -1,6 +1,5 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm ci && npm run build"
 
 [build.nixpacksPlan]
 aptPkgs = ["ffmpeg"]
@@ -11,6 +10,4 @@ NIXPACKS_NODE_VERSION = "20"
 [deploy]
 startCommand = "npm start"
 healthcheckPath = "/api/health"
-healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 5
