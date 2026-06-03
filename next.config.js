@@ -4,7 +4,6 @@ const nextConfig = {
     serverActions: {
       bodySizeLimit: '500mb',
     },
-    instrumentationHook: true,  // enables src/instrumentation.ts for cron startup
   },
   images: {
     remotePatterns: [
