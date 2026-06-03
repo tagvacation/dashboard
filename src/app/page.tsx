@@ -881,8 +881,203 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
             </div>
           )}
 
+          {/* Scene Jobs — all prompts, status, manual retry */}
+          <SceneJobsPanel storyId={story.story_id} onClipGenerated={() => refreshStory()} />
+
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Scene Jobs Panel ──────────────────────────────────────────────────────────
+
+interface SceneJob {
+  id: number; story_id: string; scene_num: string; beat: string
+  video_prompt: string; tts_text: string; primary_anchor: string
+  secondary_anchor: string; operation_id: string; status: string
+  attempt: number; error_type: string; error_message: string
+}
+
+function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipGenerated: () => void }) {
+  const [jobs, setJobs] = useState<SceneJob[]>([])
+  const [open, setOpen] = useState(false)
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [retrying, setRetrying] = useState<string | null>(null)
+  const [editingPrompt, setEditingPrompt] = useState<{ key: string; value: string } | null>(null)
+
+  const load = async () => {
+    const res = await fetch(`/api/stories/${storyId}/scenes`)
+    if (res.ok) setJobs((await res.json()).scenes || [])
+  }
+
+  useEffect(() => { if (open) load() }, [open, storyId])
+
+  const retry = async (job: SceneJob) => {
+    const promptToUse = editingPrompt?.key === `${job.scene_num}-${job.attempt}` ? editingPrompt.value : job.video_prompt
+    setRetrying(`${job.scene_num}-${job.attempt}`)
+    const res = await fetch(`/api/stories/${storyId}/scenes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scene_num: job.scene_num, video_prompt: promptToUse }),
+    })
+    const data = await res.json()
+    if (res.ok) { onClipGenerated(); await load() }
+    else alert(`Retry failed: ${data.error}`)
+    setRetrying(null); setEditingPrompt(null)
+  }
+
+  // Group by scene_num, show all attempts
+  const byScene = jobs.reduce<Record<string, SceneJob[]>>((acc, j) => {
+    acc[j.scene_num] = acc[j.scene_num] || []
+    acc[j.scene_num].push(j)
+    return acc
+  }, {})
+
+  const statusColors: Record<string, string> = {
+    done: 'bg-emerald-100 text-emerald-700',
+    filtered: 'bg-red-100 text-red-600',
+    manual_pending: 'bg-amber-100 text-amber-700',
+    failed: 'bg-red-100 text-red-600',
+    submitted: 'bg-blue-100 text-blue-600',
+    polling: 'bg-blue-100 text-blue-600',
+    pending: 'bg-gray-100 text-gray-500',
+  }
+
+  const needsRetry = jobs.filter(j => j.status === 'manual_pending' || j.status === 'filtered').length
+  const latestByScene = Object.values(byScene).map(attempts => attempts.sort((a, b) => b.attempt - a.attempt)[0])
+
+  return (
+    <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-200/60">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full px-5 py-3.5 flex items-center justify-between hover:bg-gray-50/80 transition-colors">
+        <div className="flex items-center gap-2.5">
+          <span className="text-sm font-semibold text-gray-900">Scene Prompts & Retry</span>
+          {needsRetry > 0 && (
+            <span className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full font-semibold">
+              {needsRetry} need retry
+            </span>
+          )}
+          {jobs.length > 0 && !needsRetry && (
+            <span className="text-xs px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{Object.keys(byScene).length} scenes</span>
+          )}
+        </div>
+        <span className="text-gray-400 text-xs">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="border-t border-gray-100">
+          {jobs.length === 0 ? (
+            <div className="p-6 text-center text-gray-400 text-sm">No scene data yet — generate a story first</div>
+          ) : (
+            <div className="divide-y divide-gray-50">
+              {latestByScene.sort((a, b) => a.scene_num.localeCompare(b.scene_num)).map(job => {
+                const sc = statusColors[job.status] || 'bg-gray-100 text-gray-500'
+                const allAttempts = byScene[job.scene_num] || []
+                const isExpanded = expanded === job.scene_num
+                const editKey = `${job.scene_num}-${job.attempt}`
+                const isEditing = editingPrompt?.key === editKey
+                const needsAction = job.status === 'manual_pending' || job.status === 'filtered'
+
+                return (
+                  <div key={job.scene_num}>
+                    <button onClick={() => setExpanded(isExpanded ? null : job.scene_num)}
+                      className={`w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors ${needsAction ? 'bg-red-50/30' : ''}`}>
+                      <span className="w-8 h-8 shrink-0 bg-gray-100 rounded-lg flex items-center justify-center text-xs font-bold text-gray-600">
+                        {job.scene_num}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className={`text-xs px-1.5 py-0.5 rounded-md font-medium ${sc}`}>{job.status}</span>
+                          <span className="text-xs text-gray-400">{job.beat}</span>
+                          {allAttempts.length > 1 && <span className="text-xs text-gray-300">attempt {job.attempt}/{allAttempts.length}</span>}
+                        </div>
+                        <p className="text-xs text-gray-500 truncate">{job.tts_text}</p>
+                        {job.error_message && <p className="text-xs text-red-500 truncate mt-0.5">⚠ {job.error_message}</p>}
+                      </div>
+                      {needsAction && (
+                        <button
+                          onClick={e => { e.stopPropagation(); retry(job) }}
+                          disabled={retrying === editKey}
+                          className="shrink-0 px-3 py-1.5 bg-[#111111] hover:bg-black text-white rounded-xl text-xs font-semibold disabled:opacity-50">
+                          {retrying === editKey ? '⏳' : '↺ Retry'}
+                        </button>
+                      )}
+                      <span className="text-gray-300 text-xs">{isExpanded ? '▲' : '▼'}</span>
+                    </button>
+
+                    {isExpanded && (
+                      <div className="px-4 pb-4 bg-gray-50/50 border-t border-gray-100 space-y-3">
+                        {/* Hindi narration */}
+                        <div className="pt-3">
+                          <p className="text-xs font-semibold text-gray-500 mb-1">Hindi Narration (TTS)</p>
+                          <p className="text-sm text-gray-800 bg-white rounded-xl px-3 py-2 border border-gray-200">{job.tts_text}</p>
+                        </div>
+
+                        {/* Video prompt — editable */}
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <p className="text-xs font-semibold text-gray-500">Video Prompt (Veo)</p>
+                            <button onClick={() => setEditingPrompt(isEditing ? null : { key: editKey, value: job.video_prompt })}
+                              className="text-xs text-gray-400 hover:text-gray-700">
+                              {isEditing ? '✕ Cancel edit' : '✏️ Edit'}
+                            </button>
+                          </div>
+                          {isEditing ? (
+                            <textarea
+                              value={editingPrompt?.value || ''}
+                              onChange={e => setEditingPrompt({ key: editKey, value: e.target.value })}
+                              rows={8}
+                              className="w-full px-3 py-2 text-xs font-mono bg-white border border-gray-300 rounded-xl focus:outline-none focus:border-indigo-400 resize-y leading-relaxed"
+                            />
+                          ) : (
+                            <p className="text-xs font-mono text-gray-600 bg-white rounded-xl px-3 py-2 border border-gray-200 leading-relaxed whitespace-pre-wrap">
+                              {job.video_prompt}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => retry(job)}
+                            disabled={!!retrying}
+                            className="flex-1 py-2 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-colors">
+                            {retrying === editKey ? '⏳ Generating...' : isEditing ? '↺ Retry with edited prompt' : '↺ Retry this scene'}
+                          </button>
+                          {job.operation_id && (
+                            <button
+                              onClick={() => navigator.clipboard.writeText(job.operation_id)}
+                              className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-500 rounded-xl text-xs">
+                              Copy op ID
+                            </button>
+                          )}
+                        </div>
+
+                        {/* All attempts history */}
+                        {allAttempts.length > 1 && (
+                          <div>
+                            <p className="text-xs text-gray-400 mb-1">All attempts ({allAttempts.length})</p>
+                            <div className="space-y-1">
+                              {allAttempts.map(a => (
+                                <div key={a.attempt} className="flex items-center gap-2 text-xs">
+                                  <span className="text-gray-400">#{a.attempt}</span>
+                                  <span className={`px-1.5 py-0.5 rounded font-medium ${statusColors[a.status] || 'bg-gray-100 text-gray-500'}`}>{a.status}</span>
+                                  {a.error_message && <span className="text-red-500 truncate">{a.error_message}</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

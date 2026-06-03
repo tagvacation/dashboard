@@ -302,12 +302,51 @@ Your output must be a SINGLE JSON object with these exact keys:
   }
 }
 
+/**
+ * Rewrites a content-filtered Veo prompt SAFELY:
+ * 1. Gemini rewrites ONLY the action (middle part) — 1-2 sentences
+ * 2. We PROGRAMMATICALLY reconstruct: anchor + new_action + style_suffix
+ * This guarantees character anchor and style NEVER change between attempts.
+ */
 export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promise<string> {
-  const system = await getPrompt('scene_rewrite')
-  const user = `Story: ${topic}\nScene ${scene.scene_num} — Beat: ${scene.beat}\nNarrator: "${scene.tts_text}"\n\nOriginal rejected prompt:\n${scene.video_prompt}\n\nRewrite: keep character anchors verbatim, keep Indian period setting, replace only the filtered action.`
-
   const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) throw new Error('GEMINI_API_KEY not set')
+
+  // Extract the action-only part from original prompt
+  // Format: [anchor] [action] [style_suffix]
+  const styleSuffix = STYLE_SUFFIX
+  let actionPart = String(scene.video_prompt || '')
+
+  // Strip primary anchor from start
+  if (scene.primary_anchor && actionPart.startsWith(scene.primary_anchor)) {
+    actionPart = actionPart.slice(scene.primary_anchor.length).trim()
+  }
+  // Strip "Wide two-shot. [secondary anchor]" if present
+  if (actionPart.startsWith('Wide two-shot framing.')) {
+    actionPart = actionPart.replace('Wide two-shot framing.', '').trim()
+    if (scene.secondary_anchor && actionPart.startsWith(scene.secondary_anchor)) {
+      actionPart = actionPart.slice(scene.secondary_anchor.length).trim()
+    }
+  }
+  // Strip style suffix
+  const styleIdx = actionPart.indexOf('Pixar-inspired')
+  if (styleIdx !== -1) actionPart = actionPart.slice(0, styleIdx).trim()
+
+  // Ask Gemini to rewrite ONLY the action part (NOT the full prompt)
+  const system = `You rewrite a REJECTED Veo animation action description.
+Return ONLY 1-2 sentences describing a safe, peaceful alternative action.
+DO NOT include character descriptions. DO NOT include style/animation instructions.
+Just the action: what the character is doing, where, with what expression.
+Keep it story-relevant and in Indian village/period setting.`
+
+  const user = `Story: ${topic}
+Scene ${scene.scene_num} — Beat: ${scene.beat}
+Narrator line: "${scene.tts_text}"
+
+Original REJECTED action:
+${actionPart}
+
+Rewrite: peaceful story-relevant alternative (1-2 sentences only). No character descriptions, no style words.`
 
   const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
     method: 'POST',
@@ -315,10 +354,23 @@ export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promis
     body: JSON.stringify({
       system_instruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 450 },
+      generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
     }),
   })
-  if (!res.ok) throw new Error(`Gemini rewrite error ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`Gemini rewrite error ${res.status}`)
   const data = await res.json()
-  return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || scene.video_prompt
+  const newAction = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()
+
+  if (!newAction) return scene.video_prompt // fallback to original if Gemini fails
+
+  // PROGRAMMATICALLY reconstruct — anchor and style NEVER change
+  let reconstructed = scene.primary_anchor
+
+  if (scene.has_secondary && scene.secondary_anchor) {
+    reconstructed += ` Wide two-shot framing. ${scene.secondary_anchor}`
+  }
+
+  reconstructed += ` ${newAction} ${styleSuffix} Vertical 9:16, no text or captions in frame, no logos or brand marks.`
+
+  return reconstructed
 }
