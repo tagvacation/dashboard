@@ -280,10 +280,7 @@ export async function runPipeline(storyId: string, categoryId?: string, credenti
     if (!(await gcsExists(ctx, audioPath))) {
       await log('Generating narration audio...')
       await setStep('audio')
-      // TTS always uses default account (free, no credit usage, API enabled there)
-      // Only Veo uses the selected account (credits)
-      const ttsCtx = defaultContext()
-      const buf = await generateFullNarration(script.scenes, ttsCtx)
+      const buf = await generateFullNarration(script.scenes, ctx)
       const audioUrl = await uploadBuffer(ctx, audioPath, buf, 'audio/mpeg')
       await log('Audio uploaded')
       await storiesDb.update(storyId, { audio_url: audioUrl, storage_path: `stories/${storyId}/` })
