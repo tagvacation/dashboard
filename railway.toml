@@ -1,11 +1,5 @@
 [build]
-builder = "NIXPACKS"
-
-[build.nixpacksPlan]
-aptPkgs = ["ffmpeg"]
-
-[build.nixpacksPlan.variables]
-NIXPACKS_NODE_VERSION = "20"
+builder = "RAILPACK"
 
 [deploy]
 startCommand = "npm start"
