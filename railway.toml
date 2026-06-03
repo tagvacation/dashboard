@@ -1,8 +1,14 @@
 [build]
-builder = "RAILPACK"
+builder = "NIXPACKS"
+
+[build.nixpacksPlan]
+aptPkgs = ["ffmpeg"]
+
+[build.nixpacksPlan.variables]
+NIXPACKS_NODE_VERSION = "20"
 
 [deploy]
 startCommand = "npm start"
-healthcheckTimeout = 120
 healthcheckPath = "/api/health"
+healthcheckTimeout = 120
 restartPolicyType = "ON_FAILURE"
