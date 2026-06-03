@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { sceneJobsDb, pipelineDb } from '@/lib/db'
+import { sceneJobsDb } from '@/lib/db'
 import { submitVeoClip, pollVeoOperation } from '@/lib/pipeline/veo'
+import { defaultContext } from '@/lib/pipeline/auth'
 import { Storage } from '@google-cloud/storage'
 
 export const dynamic = 'force-dynamic'
@@ -50,15 +51,16 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     await sceneJobsDb.update(storyId, scene_num, nextAttempt, { status: 'submitted' })
 
-    // Submit to Veo
-    const opId = await submitVeoClip(promptToUse)
+    // Submit to Veo using default context
+    const ctx = defaultContext()
+    const opId = await submitVeoClip(promptToUse, ctx)
     await sceneJobsDb.update(storyId, scene_num, nextAttempt, { operation_id: opId, status: 'polling' })
 
     // Poll
     let base64 = ''
     for (let i = 0; i < 20; i++) {
       await sleep(60_000)
-      const result = await pollVeoOperation(opId)
+      const result = await pollVeoOperation(opId, ctx)
       if (!result.done) continue
 
       if (result.filtered) {

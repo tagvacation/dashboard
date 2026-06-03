@@ -15,15 +15,21 @@ function generateStoryId() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
-  const categoryId = body.category_id || undefined  // optional: specific category
+  const categoryId = body.category_id || undefined
+  const credentialId = body.credential_id || undefined  // which GCP account to use
 
   const storyId = generateStoryId()
   await pipelineDb.create(storyId)
 
-  runPipeline(storyId, categoryId).catch(async (err) => {
+  runPipeline(storyId, categoryId, credentialId).catch(async (err) => {
     console.error(`Pipeline ${storyId} crashed:`, err)
     try { await pipelineDb.setStep(storyId, 'failed', { error: String(err) }) } catch { /* ignore */ }
   })
 
-  return NextResponse.json({ story_id: storyId, category_id: categoryId || 'default', message: 'Pipeline started' })
+  return NextResponse.json({
+    story_id: storyId,
+    category_id: categoryId || 'default',
+    credential_id: credentialId || 'default',
+    message: 'Pipeline started',
+  })
 }

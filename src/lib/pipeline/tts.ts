@@ -1,7 +1,8 @@
 import { getAccessToken } from './auth'
+import type { GcpContext } from './auth'
 import type { Scene } from './types'
 
-export async function generateFullNarration(scenes: Scene[]): Promise<Buffer> {
+export async function generateFullNarration(scenes: Scene[], ctx: GcpContext): Promise<Buffer> {
   const parts = scenes.map((scene, i) => {
     const isLast = i === scenes.length - 1
     const isTwist = scene.beat === 'twist'
@@ -21,7 +22,7 @@ export async function generateFullNarration(scenes: Scene[]): Promise<Buffer> {
 
   const ssml = `<speak>${parts}</speak>`
 
-  const token = await getAccessToken()
+  const token = await getAccessToken(ctx)
   const res = await fetch('https://texttospeech.googleapis.com/v1/text:synthesize', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },

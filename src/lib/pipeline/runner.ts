@@ -13,25 +13,53 @@
 import { Storage } from '@google-cloud/storage'
 import { pipelineDb, sceneJobsDb, storiesDb, categoriesDb, gcpCredentialsDb } from '../db'
 import { pickTopic, writeScript, rewriteFilteredPrompt } from './gemini'
-import { submitVeoClip, pollVeoOperation } from './veo'
 import { generateFullNarration } from './tts'
+import { defaultContext } from './auth'
+import type { GcpContext } from './auth'
 import type { PipelineStep, Scene } from './types'
 
-const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
-const storage = new Storage({ credentials })
-const bucket = storage.bucket(process.env.GCS_BUCKET!)
-const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
+// Suppress unused import warning - Storage used inside makeStorage
+void Storage
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-// ─── GCS ─────────────────────────────────────────────────────────────────────
+// ─── Load GCP context (env default or from DB) ────────────────────────────────
 
-async function uploadBuffer(path: string, buf: Buffer, mimeType: string): Promise<string> {
+async function loadGcpContext(credentialId?: string): Promise<GcpContext> {
+  // Bucket is ALWAYS the default env bucket — multiple accounts share same GCS
+  const defaultBucket = process.env.GCS_BUCKET || 'ai_clip_007'
+
+  if (!credentialId || credentialId === 'default') return defaultContext()
+  const cred = await gcpCredentialsDb.get(credentialId)
+  if (!cred) {
+    console.warn(`Credential ${credentialId} not found — using default`)
+    return defaultContext()
+  }
+  return {
+    credentials: JSON.parse(cred.sa_json),
+    projectId: cred.project_id,
+    bucket: defaultBucket,          // always same bucket regardless of account
+    region: 'us-central1',
+  }
+}
+
+// ─── GCS (ctx-aware) ─────────────────────────────────────────────────────────
+
+function makeStorage(ctx: GcpContext) {
+  const storage = new Storage({ credentials: ctx.credentials })
+  const bucket = storage.bucket(ctx.bucket)
+  const PUBLIC_BASE = `https://storage.googleapis.com/${ctx.bucket}`
+  return { bucket, PUBLIC_BASE }
+}
+
+async function uploadBuffer(ctx: GcpContext, path: string, buf: Buffer, mimeType: string): Promise<string> {
+  const { bucket, PUBLIC_BASE } = makeStorage(ctx)
   await bucket.file(path).save(buf, { contentType: mimeType })
   return `${PUBLIC_BASE}/${path}`
 }
 
-async function gcsExists(path: string): Promise<boolean> {
+async function gcsExists(ctx: GcpContext, path: string): Promise<boolean> {
+  const { bucket } = makeStorage(ctx)
   const [exists] = await bucket.file(path).exists()
   return exists
 }
@@ -48,46 +76,36 @@ interface SceneResult {
  * Returns base64 on success, or throws with error details.
  * Caller handles retry logic and DB updates.
  */
-async function submitAndPoll(prompt: string, maxPollAttempts = 20): Promise<string> {
-  const opId = await submitVeoClip(prompt)
+async function submitAndPoll(prompt: string, ctx: GcpContext, maxPollAttempts = 20): Promise<string> {
+  const { submitVeoClip: submit, pollVeoOperation: poll } = await import('./veo')
+  const opId = await submit(prompt, ctx)
 
   for (let i = 0; i < maxPollAttempts; i++) {
-    await sleep(60_000) // 60s between polls
-    const result = await pollVeoOperation(opId)
-
-    if (!result.done) continue // still processing
-
+    await sleep(60_000)
+    const result = await poll(opId, ctx)
+    if (!result.done) continue
     if (result.filtered) {
       const err = new Error(result.error || 'Content filter rejected')
       ;(err as NodeJS.ErrnoException).code = 'CONTENT_FILTER'
       throw err
     }
-
     if (!result.base64) {
       const err = new Error('Veo returned done=true but no video data')
       ;(err as NodeJS.ErrnoException).code = 'NO_VIDEO'
       throw err
     }
-
     return result.base64
   }
-
-  const err = new Error(`Polling timeout after ${maxPollAttempts} attempts (${maxPollAttempts} minutes)`)
+  const err = new Error(`Polling timeout after ${maxPollAttempts} attempts`)
   ;(err as NodeJS.ErrnoException).code = 'TIMEOUT'
   throw err
 }
 
-/**
- * Process all scenes in parallel:
- * - Submit all to Veo simultaneously (like n8n)
- * - Poll all concurrently with async/await
- * - If filtered: rewrite prompt, retry once
- * - If still failing: mark as manual_pending with full details saved
- */
 async function processAllScenes(
   scenes: Scene[],
   storyId: string,
   topic: string,
+  ctx: GcpContext,
   log: (msg: string) => Promise<void>
 ): Promise<SceneResult[]> {
 
@@ -114,7 +132,7 @@ async function processAllScenes(
 
       try {
         // Attempt 1
-        const base64 = await submitAndPoll(scene.video_prompt)
+        const base64 = await submitAndPoll(scene.video_prompt, ctx)
         await sceneJobsDb.update(storyId, scene.scene_num, 1, { status: 'done' })
         await log(`  ✓ Scene ${scene.scene_num} done`)
         return { sceneNum: scene.scene_num, base64 }
@@ -155,7 +173,7 @@ async function processAllScenes(
           })
           await sceneJobsDb.update(storyId, scene.scene_num, 2, { status: 'submitted' })
 
-          const base64 = await submitAndPoll(rewrittenPrompt)
+          const base64 = await submitAndPoll(rewrittenPrompt, ctx)
           await sceneJobsDb.update(storyId, scene.scene_num, 2, { status: 'done' })
           await log(`  ✓ Scene ${scene.scene_num} done (retry)`)
           return { sceneNum: scene.scene_num, base64 }
@@ -182,7 +200,7 @@ async function processAllScenes(
 
 // ─── Main runner ──────────────────────────────────────────────────────────────
 
-export async function runPipeline(storyId: string, categoryId?: string) {
+export async function runPipeline(storyId: string, categoryId?: string, credentialId?: string) {
   const log = async (msg: string) => {
     await pipelineDb.appendLog(storyId, msg)
     console.log(`[${storyId}] ${msg}`)
@@ -195,6 +213,10 @@ export async function runPipeline(storyId: string, categoryId?: string) {
   try {
     let run = await pipelineDb.get(storyId)
     if (!run) throw new Error('Pipeline run not found in DB')
+
+    // Load GCP context (which account to use for Veo + TTS + GCS)
+    const ctx = await loadGcpContext(credentialId)
+    await log(`GCP Account: ${ctx.projectId} (bucket: ${ctx.bucket})`)
 
     // Load category-specific prompts/config (falls back to global if empty)
     const category = categoryId ? await categoriesDb.get(categoryId) : await categoriesDb.getDefault()
@@ -255,11 +277,11 @@ export async function runPipeline(storyId: string, categoryId?: string) {
 
     // ── Step 3: Generate Audio ──────────────────────────────────────────────
     const audioPath = `stories/${storyId}/audio/full_narration.mp3`
-    if (!(await gcsExists(audioPath))) {
+    if (!(await gcsExists(ctx, audioPath))) {
       await log('Generating narration audio...')
       await setStep('audio')
-      const buf = await generateFullNarration(script.scenes)
-      const audioUrl = await uploadBuffer(audioPath, buf, 'audio/mpeg')
+      const buf = await generateFullNarration(script.scenes, ctx)
+      const audioUrl = await uploadBuffer(ctx, audioPath, buf, 'audio/mpeg')
       await log('Audio uploaded')
       await storiesDb.update(storyId, { audio_url: audioUrl, storage_path: `stories/${storyId}/` })
     } else {
@@ -278,7 +300,7 @@ export async function runPipeline(storyId: string, categoryId?: string) {
       await log(`Processing ${scenesToProcess.length} scenes (${doneSceneNums.size} already done)`)
       await setStep('veo_submit')
 
-      const completedScenes = await processAllScenes(scenesToProcess, storyId, topic, log)
+      const completedScenes = await processAllScenes(scenesToProcess, storyId, topic, ctx, log)
 
       // Upload all completed clip buffers to GCS
       await setStep('veo_poll')
@@ -286,8 +308,8 @@ export async function runPipeline(storyId: string, categoryId?: string) {
 
       await Promise.all(completedScenes.map(async ({ sceneNum, base64 }) => {
         const clipPath = `stories/${storyId}/clips/scene_${sceneNum}.mp4`
-        if (!(await gcsExists(clipPath))) {
-          await uploadBuffer(clipPath, Buffer.from(base64, 'base64'), 'video/mp4')
+        if (!(await gcsExists(ctx, clipPath))) {
+          await uploadBuffer(ctx, clipPath, Buffer.from(base64, 'base64'), 'video/mp4')
           await log(`  GCS: scene_${sceneNum}.mp4`)
         }
       }))

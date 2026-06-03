@@ -309,6 +309,12 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
   const [expandedRun, setExpandedRun] = useState<string | null>(null)
   const [categories, setCategories] = useState<Category[]>([])
   const [selectedCat, setSelectedCat] = useState<string>('kathakar')
+  const [selectedCred, setSelectedCred] = useState<string>('default')
+  const [credentials, setCredentials] = useState<{ id: string; name: string; project_id: string }[]>([])
+
+  useEffect(() => {
+    fetch('/api/credentials').then(r => r.json()).then(d => setCredentials(d.credentials || []))
+  }, [])
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
@@ -361,7 +367,7 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
     const res = await fetch('/api/pipeline/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ category_id: selectedCat }),
+      body: JSON.stringify({ category_id: selectedCat, credential_id: selectedCred }),
     })
     const data = await res.json()
     setStarting(false)
@@ -424,6 +430,26 @@ function GenerateView({ onStoryReady, stories }: { onStoryReady: () => void; sto
                     {cat.perspective === 'first_person' ? '1st person' : cat.perspective === 'character' ? 'character' : '3rd person'}
                   </span>
                 </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── GCP Account selector ── */}
+      {credentials.length > 1 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">GCP Account (Veo Credits)</p>
+          <div className="flex gap-2 flex-wrap">
+            {credentials.map(cred => (
+              <button key={cred.id} onClick={() => setSelectedCred(cred.id)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border-2 text-xs font-medium transition-all
+                  ${selectedCred === cred.id ? 'border-[#111111] bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                {cred.name}
+                <span className={`text-xs font-mono ${selectedCred === cred.id ? 'text-gray-400' : 'text-gray-400'}`}>
+                  {cred.project_id.slice(0, 12)}...
+                </span>
               </button>
             ))}
           </div>
@@ -929,6 +955,22 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
 
   const needsRetry = jobs.filter(j => j.status === 'manual_pending' || j.status === 'filtered').length
   const latestByScene = Object.values(byScene).map(attempts => attempts.sort((a, b) => b.attempt - a.attempt)[0])
+  const pendingJobs = latestByScene.filter(j => j.status === 'manual_pending' || j.status === 'filtered')
+
+  // Retry ALL pending scenes sequentially (saves credits — uses saved prompts)
+  const retryAll = async () => {
+    setRetrying('all')
+    for (const job of pendingJobs) {
+      const res = await fetch(`/api/stories/${storyId}/scenes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scene_num: job.scene_num, video_prompt: job.video_prompt }),
+      })
+      if (res.ok) await load()
+      else console.error(`Retry failed for scene ${job.scene_num}`)
+    }
+    setRetrying(null); onClipGenerated()
+  }
 
   if (loading) return (
     <div className="py-12 text-center text-gray-400 text-sm animate-pulse">Loading scene history...</div>
@@ -937,16 +979,23 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
   return (
     <div className="space-y-3">
       {/* Summary bar */}
-      <div className="flex items-center gap-3 px-1">
+      <div className="flex items-center gap-2 flex-wrap">
         <span className="text-sm font-semibold text-gray-700">{Object.keys(byScene).length} scenes</span>
-        {needsRetry > 0 && (
-          <span className="flex items-center gap-1 text-xs px-2.5 py-1 bg-red-100 text-red-600 rounded-full font-semibold">
-            ⚠ {needsRetry} need retry
-          </span>
-        )}
-        {needsRetry === 0 && jobs.length > 0 && (
+        {needsRetry > 0 ? (
+          <>
+            <span className="text-xs px-2 py-0.5 bg-red-100 text-red-600 rounded-full font-semibold">
+              ⚠ {needsRetry} need retry
+            </span>
+            <button onClick={retryAll} disabled={retrying === 'all'}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold transition-colors">
+              {retrying === 'all' ? (
+                <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Retrying {needsRetry}...</>
+              ) : `↺ Retry All ${needsRetry} Scenes`}
+            </button>
+          </>
+        ) : jobs.length > 0 ? (
           <span className="text-xs text-emerald-500 font-medium">All scenes OK ✓</span>
-        )}
+        ) : null}
         <button onClick={load} className="ml-auto text-xs text-gray-400 hover:text-gray-600">↺ Refresh</button>
       </div>
 
@@ -1822,11 +1871,14 @@ function CategoriesSettings() {
 
 // ── Credentials Settings ─────────────────────────────────────────────────────
 
+const DEFAULT_BUCKET = 'ai_clip_007'
+
 function CredentialsSettings() {
   const [creds, setCreds] = useState<{ id: string; name: string; project_id: string; bucket: string; is_active: boolean }[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ id: '', name: '', project_id: '', bucket: '', sa_json: '' })
+  const [jsonText, setJsonText] = useState('')
+  const [form, setForm] = useState({ id: '', name: '', project_id: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -1837,32 +1889,30 @@ function CredentialsSettings() {
   }
   useEffect(() => { load() }, [])
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      try {
-        const json = JSON.parse(ev.target?.result as string)
-        setForm(f => ({
-          ...f,
-          sa_json: ev.target?.result as string,
-          project_id: json.project_id || f.project_id,
-          id: f.id || `account_${Date.now()}`,
-          name: f.name || `${json.project_id || 'GCP Account'}`,
-        }))
-        setError('')
-      } catch { setError('Invalid JSON file') }
-    }
-    reader.readAsText(file)
+  // Auto-extract project_id when JSON is pasted
+  const handleJsonChange = (text: string) => {
+    setJsonText(text); setError('')
+    try {
+      const parsed = JSON.parse(text)
+      setForm(f => ({
+        ...f,
+        project_id: parsed.project_id || f.project_id,
+        id: f.id || `account_${(parsed.project_id || '').slice(0, 8)}`,
+        name: f.name || parsed.project_id || '',
+      }))
+    } catch { /* not valid JSON yet, ignore */ }
   }
 
   const save = async () => {
+    if (!jsonText.trim()) { setError('Paste the SA JSON first'); return }
+    try { JSON.parse(jsonText) } catch { setError('Invalid JSON — check for missing quotes or commas'); return }
     setSaving(true); setError('')
-    const res = await fetch('/api/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const payload = { ...form, bucket: DEFAULT_BUCKET, sa_json: jsonText }
+    const res = await fetch('/api/credentials', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     const data = await res.json()
     if (!res.ok) { setError(data.error); setSaving(false); return }
     await load(); setShowForm(false); setSaving(false)
-    setForm({ id: '', name: '', project_id: '', bucket: '', sa_json: '' })
+    setForm({ id: '', name: '', project_id: '' }); setJsonText('')
   }
 
   if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading...</div>
@@ -1870,49 +1920,64 @@ function CredentialsSettings() {
   return (
     <div className="space-y-3">
       <div className="flex justify-between items-center">
-        <p className="text-xs text-gray-500">Multiple Vertex AI accounts for Veo video generation and TTS.</p>
-        <button onClick={() => setShowForm(s => !s)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-semibold">
+        <div>
+          <p className="text-xs text-gray-500">Multiple GCP accounts for Veo/TTS. All use the same GCS bucket.</p>
+          <p className="text-xs text-gray-400 mt-0.5">Bucket: <span className="font-mono text-gray-600">{DEFAULT_BUCKET}</span> (shared)</p>
+        </div>
+        <button onClick={() => setShowForm(s => !s)}
+          className="px-3 py-1.5 bg-[#111111] hover:bg-black text-white rounded-xl text-xs font-semibold">
           + Add Account
         </button>
       </div>
 
       {showForm && (
         <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-3">
-          <p className="text-sm font-semibold text-gray-800">Add GCP Account</p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-gray-800">Add GCP Account</p>
+            <button onClick={() => { setShowForm(false); setError(''); setJsonText(''); setForm({ id: '', name: '', project_id: '' }) }}
+              className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+          </div>
 
-          {/* SA JSON file upload */}
+          {/* JSON paste area */}
           <div>
-            <p className="text-xs text-gray-500 mb-1.5">Upload Service Account JSON key file:</p>
-            <label className="flex items-center gap-3 px-4 py-3 border-2 border-dashed border-gray-200 hover:border-indigo-400 rounded-xl cursor-pointer transition-colors">
-              <span className="text-2xl">📂</span>
-              <div>
-                <p className="text-xs font-medium text-gray-700">Click to upload SA JSON</p>
-                <p className="text-xs text-gray-400">{form.sa_json ? '✅ File loaded — fields auto-filled below' : 'credentials.json from GCP Console'}</p>
-              </div>
-              <input type="file" accept=".json" className="hidden" onChange={handleFileUpload} />
-            </label>
+            <p className="text-xs font-medium text-gray-600 mb-1.5">
+              Paste Service Account JSON <span className="text-gray-400">(from GCP Console → SA → Keys → JSON)</span>
+            </p>
+            <textarea
+              value={jsonText}
+              onChange={e => handleJsonChange(e.target.value)}
+              placeholder={'{\n  "type": "service_account",\n  "project_id": "your-project",\n  ...\n}'}
+              rows={6}
+              spellCheck={false}
+              className="w-full px-3 py-2.5 text-xs font-mono bg-white border border-gray-300 rounded-xl focus:outline-none focus:border-indigo-400 resize-none leading-relaxed"
+            />
+            {jsonText && (() => { try { JSON.parse(jsonText); return <p className="text-xs text-emerald-600 mt-1">✓ Valid JSON</p> } catch { return <p className="text-xs text-red-500 mt-1">Invalid JSON</p> } })()}
           </div>
 
           {error && <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</p>}
 
           <div className="grid grid-cols-2 gap-2">
-            <input value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="Account name *"
-              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400" />
-            <input value={form.id} onChange={e => setForm(f => ({...f, id: e.target.value}))} placeholder="ID (e.g. account_b)"
-              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Account Name *</p>
+              <input value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))} placeholder="e.g. Account C"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Project ID (auto-filled)</p>
+              <input value={form.project_id} onChange={e => setForm(f => ({...f, project_id: e.target.value}))} placeholder="level-hope-xxx"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            </div>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <input value={form.project_id} onChange={e => setForm(f => ({...f, project_id: e.target.value}))} placeholder="GCP Project ID *"
-              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
-            <input value={form.bucket} onChange={e => setForm(f => ({...f, bucket: e.target.value}))} placeholder="GCS Bucket name *"
-              className="px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+
+          <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 text-xs text-blue-600">
+            ℹ️ Bucket: <strong>{DEFAULT_BUCKET}</strong> — same for all accounts. Only Veo/TTS credits differ per account.
           </div>
+
           <div className="flex gap-2">
-            <button onClick={save} disabled={saving || !form.name || !form.project_id || !form.bucket || !form.sa_json}
-              className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
-              {saving ? 'Saving...' : 'Add Credential'}
+            <button onClick={save} disabled={saving || !form.name || !form.project_id || !jsonText.trim()}
+              className="flex-1 py-2.5 bg-[#111111] hover:bg-black disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
+              {saving ? 'Saving...' : '+ Add Account'}
             </button>
-            <button onClick={() => { setShowForm(false); setError('') }} className="px-4 py-2 bg-white border border-gray-200 text-gray-500 rounded-xl text-xs">Cancel</button>
           </div>
         </div>
       )}
@@ -1926,7 +1991,7 @@ function CredentialsSettings() {
                 <p className="text-sm font-semibold text-gray-800">{cred.name}</p>
                 {cred.id === 'default' && <span className="text-xs px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded-full font-medium">Active (env)</span>}
               </div>
-              <p className="text-xs text-gray-400 font-mono">{cred.project_id} · {cred.bucket}</p>
+              <p className="text-xs text-gray-400 font-mono">{cred.project_id}</p>
             </div>
             {cred.id !== 'default' && (
               <button onClick={async () => {
