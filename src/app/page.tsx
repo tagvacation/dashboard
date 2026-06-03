@@ -1,6 +1,8 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Suspense } from 'react'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,32 @@ const STEP_LABELS: Record<string, { label: string; emoji: string }> = {
   failed:     { label: 'Failed',               emoji: '❌' },
 }
 
+// ─── Confirm Dialog ────────────────────────────────────────────────────────────
+
+function ConfirmDialog({ open, title, message, onConfirm, onCancel, danger = true }:
+  { open: boolean; title: string; message: string; onConfirm: () => void; onCancel: () => void; danger?: boolean }) {
+  if (!open) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div className="relative bg-white rounded-2xl shadow-2xl p-5 w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <p className="text-base font-bold text-gray-900 mb-1">{title}</p>
+        <p className="text-sm text-gray-500 mb-5">{message}</p>
+        <div className="flex gap-2">
+          <button onClick={onCancel}
+            className="flex-1 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-sm font-medium transition-colors">
+            Cancel
+          </button>
+          <button onClick={onConfirm}
+            className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors text-white ${danger ? 'bg-red-500 hover:bg-red-600' : 'bg-[#111111] hover:bg-black'}`}>
+            Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Root ──────────────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, { bar: string; badge: string; text: string }> = {
@@ -57,28 +85,47 @@ const NAV = [
   { key: 'settings',  icon: '◈',  label: 'Settings'  },
 ] as const
 
-export default function Dashboard() {
-  const [tab, setTab] = useState<'stories' | 'generate' | 'analytics' | 'settings'>('generate')
+function DashboardInner() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // URL-driven state — back/forward button works correctly
+  const tab = (searchParams.get('tab') || 'generate') as 'stories' | 'generate' | 'analytics' | 'settings'
+  const selectedId = searchParams.get('story')
+
   const [stories, setStories] = useState<Story[]>([])
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState<Story | null>(null)
   const [search, setSearch] = useState('')
-  const [mobileView, setMobileView] = useState<'list' | 'detail'>('list')
 
-  const loadStories = () => {
+  const selected = stories.find(s => s.story_id === selectedId) || null
+
+  const loadStories = useCallback(() => {
     setLoading(true)
     fetch('/api/stories').then(r => r.json())
       .then(d => { setStories(d.stories || []); setLoading(false) })
       .catch(() => setLoading(false))
-  }
+  }, [])
 
-  useEffect(() => { loadStories() }, [])
+  useEffect(() => { loadStories() }, [loadStories])
 
   const filtered = stories.filter(s =>
     !search || s.topic.toLowerCase().includes(search.toLowerCase()) || s.story_id.includes(search)
   )
 
-  const navigate = (key: typeof tab) => { setTab(key); setMobileView('list') }
+  const navigate = useCallback((key: typeof tab, storyId?: string) => {
+    const params = new URLSearchParams()
+    params.set('tab', key)
+    if (storyId) params.set('story', storyId)
+    router.push(`/?${params.toString()}`)
+  }, [router])
+
+  const selectStory = useCallback((story: Story) => {
+    navigate('stories', story.story_id)
+  }, [navigate])
+
+  const goBack = useCallback(() => {
+    navigate('stories')
+  }, [navigate])
 
   return (
     <div className="h-screen flex overflow-hidden bg-[#F5F5F7]">
@@ -98,7 +145,7 @@ export default function Dashboard() {
         {/* Nav */}
         <nav className="px-2 py-3 space-y-0.5">
           {NAV.map(n => (
-            <button key={n.key} onClick={() => navigate(n.key)}
+            <button key={n.key} onClick={() => navigate(n.key as typeof tab)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all text-left
                 ${tab === n.key
                   ? 'bg-white/10 text-white'
@@ -110,46 +157,43 @@ export default function Dashboard() {
           ))}
         </nav>
 
-        {/* Story list (only in stories tab) */}
-        {tab === 'stories' && (
-          <div className="flex-1 flex flex-col min-h-0 border-t border-white/10 mt-1">
-            <div className="px-3 py-2 shrink-0">
-              <input value={search} onChange={e => setSearch(e.target.value)}
-                placeholder="Filter stories..."
-                className="w-full px-3 py-1.5 bg-white/10 text-white placeholder-white/30 text-xs rounded-lg focus:outline-none focus:bg-white/15 transition-colors" />
-            </div>
-            <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
-              {loading ? (
-                [...Array(6)].map((_, i) => (
-                  <div key={i} className="h-12 animate-pulse bg-white/5 rounded-xl" />
-                ))
-              ) : filtered.length === 0 ? (
-                <div className="px-3 py-6 text-center text-white/30 text-xs">No stories yet</div>
-              ) : filtered.map(story => {
-                const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
-                const isActive = selected?.story_id === story.story_id
-                return (
-                  <button key={story.story_id}
-                    onClick={() => { setSelected(story); setMobileView('detail') }}
-                    className={`w-full text-left px-3 py-2.5 rounded-xl transition-all flex items-start gap-2.5 group
-                      ${isActive ? 'bg-white/15' : 'hover:bg-white/8'}`}>
-                    <div className={`w-1 h-full min-h-[32px] rounded-full shrink-0 mt-0.5 ${sc.bar}`} />
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-xs font-medium line-clamp-2 leading-snug ${isActive ? 'text-white' : 'text-white/60 group-hover:text-white/80'}`}>
-                        {story.topic}
-                      </p>
-                      <div className="flex items-center gap-1.5 mt-1">
-                        <span className="text-xs text-white/25">{story.clips.length || story.scenes_count || 0} clips</span>
-                        {story.youtube_link && <span className="text-xs text-red-400">▶</span>}
-                        {story.hasFinal && <span className="text-xs text-white/25">🎬</span>}
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
+        {/* Story list (always visible in sidebar) */}
+        <div className="flex-1 flex flex-col min-h-0 border-t border-white/10 mt-1">
+          <div className="px-3 py-2 shrink-0 flex gap-1.5">
+            <input value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Filter stories..."
+              className="flex-1 min-w-0 px-3 py-1.5 bg-white/10 text-white placeholder-white/30 text-xs rounded-lg focus:outline-none focus:bg-white/15" />
+            {search && <button onClick={() => setSearch('')} className="text-white/40 hover:text-white/70 text-xs px-1">✕</button>}
           </div>
-        )}
+          <div className="flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+            {loading ? (
+              [...Array(5)].map((_, i) => <div key={i} className="h-11 animate-pulse bg-white/5 rounded-xl" />)
+            ) : filtered.length === 0 ? (
+              <div className="px-3 py-6 text-center text-white/30 text-xs">
+                {search ? 'No results' : 'No stories yet'}
+              </div>
+            ) : filtered.map(story => {
+              const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
+              const isActive = selectedId === story.story_id
+              return (
+                <button key={story.story_id} onClick={() => selectStory(story)}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl transition-all flex items-start gap-2.5 group
+                    ${isActive ? 'bg-white/15' : 'hover:bg-white/8'}`}>
+                  <div className={`w-1 min-h-[32px] rounded-full shrink-0 mt-0.5 ${sc.bar}`} />
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-xs font-medium line-clamp-2 leading-snug ${isActive ? 'text-white' : 'text-white/60 group-hover:text-white/80'}`}>
+                      {story.topic}
+                    </p>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-xs text-white/25">{story.clips.length || story.scenes_count || 0} clips</span>
+                      {story.youtube_link && <span className="text-red-400 text-xs">▶</span>}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        </div>
 
         {/* Bottom: stats + actions */}
         <div className="shrink-0 border-t border-white/10 px-3 py-3 space-y-2">
@@ -180,10 +224,9 @@ export default function Dashboard() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
         {/* Mobile top bar */}
-        <header className="md:hidden shrink-0 bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3">
-          {mobileView === 'detail' && selected ? (
-            <button onClick={() => setMobileView('list')}
-              className="p-1 -ml-1 text-gray-500 hover:text-gray-800">
+        <header className="md:hidden shrink-0 bg-[#111111] px-4 py-3 flex items-center gap-3">
+          {selected && tab === 'stories' ? (
+            <button onClick={goBack} className="p-1.5 -ml-1 text-white/70 hover:text-white">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
@@ -191,63 +234,79 @@ export default function Dashboard() {
           ) : (
             <div className="flex items-center gap-2">
               <img src="/logo_jpg.jpg" className="w-6 h-6 rounded-md object-cover" alt="" />
-              <span className="font-bold text-gray-900 text-sm">KathaKar</span>
+              <span className="font-bold text-white text-sm">KathaKar</span>
             </div>
           )}
-          <span className="ml-auto text-sm font-medium text-gray-500 capitalize">{tab}</span>
+          <span className="ml-auto text-xs text-white/40 capitalize">{tab}</span>
         </header>
 
         {/* Content area */}
         <div className="flex-1 overflow-hidden">
 
           {tab === 'generate' && (
-            <div className="h-full overflow-y-auto p-4 md:p-8">
-              <GenerateView onStoryReady={() => { loadStories(); setTab('stories') }} stories={stories} />
+            <div className="h-full overflow-y-auto p-4 md:p-8 pb-20 md:pb-8">
+              <GenerateView onStoryReady={() => { loadStories(); navigate('stories') }} stories={stories} />
             </div>
           )}
 
           {tab === 'stories' && (
             <div className="h-full flex">
-              {/* Mobile story list */}
-              <div className={`${mobileView === 'detail' ? 'hidden' : 'flex'} md:hidden flex-col w-full bg-white`}>
-                <div className="p-3 border-b border-gray-100">
-                  <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search stories..."
-                    className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none" />
-                </div>
-                <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
-                  {filtered.map(story => {
-                    const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
-                    return (
-                      <button key={story.story_id} onClick={() => { setSelected(story); setMobileView('detail') }}
-                        className="w-full text-left px-4 py-3.5 hover:bg-gray-50 flex items-start gap-3">
-                        <div className={`w-1 self-stretch rounded-full shrink-0 ${sc.bar}`} />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-800 line-clamp-2">{story.topic}</p>
-                          <div className="flex gap-2 mt-1 items-center">
-                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${sc.badge}`}>{sc.text}</span>
-                            <span className="text-xs text-gray-400">{story.clips.length || story.scenes_count || 0} clips</span>
+              {/* Mobile: list OR detail (URL-driven) */}
+              {!selected ? (
+                /* Mobile story list */
+                <div className="flex md:hidden flex-col w-full bg-[#F5F5F7]">
+                  <div className="bg-white px-4 pt-3 pb-2 border-b border-gray-100">
+                    <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search stories..."
+                      className="w-full px-3 py-2 text-sm bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-gray-300" />
+                  </div>
+                  <div className="flex-1 overflow-y-auto pb-20 divide-y divide-gray-100 bg-white">
+                    {loading ? (
+                      [...Array(5)].map((_, i) => <div key={i} className="h-16 animate-pulse bg-gray-50 mx-4 my-2 rounded-xl" />)
+                    ) : filtered.map(story => {
+                      const sc = STATUS_COLORS[story.status] || STATUS_COLORS.failed
+                      return (
+                        <button key={story.story_id} onClick={() => selectStory(story)}
+                          className="w-full text-left px-4 py-3.5 active:bg-gray-50 flex items-start gap-3">
+                          <div className={`w-1 self-stretch rounded-full shrink-0 ${sc.bar}`} />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800 line-clamp-2 leading-snug">{story.topic}</p>
+                            <div className="flex gap-2 mt-1.5 items-center flex-wrap">
+                              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${sc.badge}`}>{sc.text}</span>
+                              <span className="text-xs text-gray-400">{story.clips.length || story.scenes_count || 0} clips</span>
+                              {story.youtube_link && <span className="text-xs text-red-500 font-medium">▶ Live</span>}
+                            </div>
                           </div>
-                        </div>
-                        <svg className="w-4 h-4 text-gray-300 shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    )
-                  })}
+                          <svg className="w-4 h-4 text-gray-300 shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      )
+                    })}
+                  </div>
                 </div>
-              </div>
+              ) : (
+                /* Mobile story detail */
+                <div className="flex md:hidden flex-col w-full overflow-y-auto pb-20">
+                  <StoryDetail
+                    key={selected.story_id}
+                    story={selected}
+                    onDelete={() => { navigate('stories'); setStories(s => s.filter(x => x.story_id !== selected.story_id)) }}
+                    onUpdate={u => setStories(s => s.map(x => x.story_id === u.story_id ? u : x))}
+                  />
+                </div>
+              )}
 
-              {/* Story detail */}
-              <main className={`${mobileView === 'list' ? 'hidden md:flex' : 'flex'} flex-1 flex-col overflow-y-auto`}>
+              {/* Desktop story detail */}
+              <main className="hidden md:flex flex-1 flex-col overflow-y-auto">
                 {!selected ? (
                   <div className="flex-1 flex flex-col items-center justify-center gap-4 text-center p-8">
                     <div className="w-16 h-16 bg-white rounded-2xl shadow-sm flex items-center justify-center text-3xl">📚</div>
                     <div>
-                      <p className="text-sm font-semibold text-gray-700">No story selected</p>
+                      <p className="text-sm font-semibold text-gray-700">Select a story</p>
                       <p className="text-xs text-gray-400 mt-1">Pick from the sidebar or generate a new one</p>
                     </div>
                     <button onClick={() => navigate('generate')}
-                      className="px-5 py-2.5 bg-[#111111] hover:bg-black text-white rounded-xl text-sm font-semibold transition-colors">
+                      className="px-5 py-2.5 bg-[#111111] hover:bg-black text-white rounded-xl text-sm font-semibold">
                       ✦ Generate New Story
                     </button>
                   </div>
@@ -255,8 +314,8 @@ export default function Dashboard() {
                   <StoryDetail
                     key={selected.story_id}
                     story={selected}
-                    onDelete={() => { setSelected(null); setMobileView('list'); setStories(s => s.filter(x => x.story_id !== selected.story_id)) }}
-                    onUpdate={u => { setStories(s => s.map(x => x.story_id === u.story_id ? u : x)); setSelected(u) }}
+                    onDelete={() => { navigate('stories'); setStories(s => s.filter(x => x.story_id !== selected.story_id)) }}
+                    onUpdate={u => setStories(s => s.map(x => x.story_id === u.story_id ? u : x))}
                   />
                 )}
               </main>
@@ -264,13 +323,13 @@ export default function Dashboard() {
           )}
 
           {tab === 'analytics' && (
-            <div className="h-full overflow-y-auto p-4 md:p-8">
+            <div className="h-full overflow-y-auto p-4 md:p-8 pb-20 md:pb-8">
               <AnalyticsView />
             </div>
           )}
 
           {tab === 'settings' && (
-            <div className="h-full overflow-y-auto p-4 md:p-8">
+            <div className="h-full overflow-y-auto p-4 md:p-8 pb-20 md:pb-8">
               <SettingsView />
             </div>
           )}
@@ -278,18 +337,25 @@ export default function Dashboard() {
       </div>
 
       {/* Mobile bottom nav */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 flex z-20">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#111111] border-t border-white/10 flex z-20">
         {NAV.map(n => (
-          <button key={n.key} onClick={() => navigate(n.key)}
-            className={`flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors
-              ${tab === n.key ? 'text-black' : 'text-gray-400'}`}>
-            <span className={`text-lg leading-none font-bold ${tab === n.key ? 'text-black' : 'text-gray-300'}`}>{n.icon}</span>
-            <span>{n.label}</span>
+          <button key={n.key} onClick={() => navigate(n.key as typeof tab)}
+            className="flex-1 flex flex-col items-center py-3 gap-0.5 text-xs font-medium transition-colors">
+            <span className={`text-lg leading-none font-bold ${tab === n.key ? 'text-white' : 'text-white/30'}`}>{n.icon}</span>
+            <span className={tab === n.key ? 'text-white' : 'text-white/30'}>{n.label}</span>
           </button>
         ))}
       </nav>
 
     </div>
+  )
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense fallback={<div className="h-screen bg-[#111111] flex items-center justify-center text-white/30 text-sm">Loading...</div>}>
+      <DashboardInner />
+    </Suspense>
   )
 }
 
@@ -669,6 +735,7 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
   const [downloading, setDownloading] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deletingClip, setDeletingClip] = useState('')
+  const [confirm, setConfirm] = useState<{ open: boolean; title: string; message: string; action: () => void }>({ open: false, title: '', message: '', action: () => {} })
 
   const refreshStory = async () => {
     const res = await fetch(`/api/stories/${story.story_id}`)
@@ -687,28 +754,30 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
     setDownloading(false)
   }
 
-  const deleteStory = async () => {
-    if (!confirm('Delete this story and ALL files? This cannot be undone.')) return
-    setDeleting(true)
+  const deleteStory = () => {
+    setConfirm({ open: true, title: 'Delete Story?', message: 'This will permanently delete all clips, audio, and files. This cannot be undone.', action: async () => {
+      setDeleting(true)
     const res = await fetch(`/api/stories/${story.story_id}`, { method: 'DELETE' })
     if (res.ok) { onDelete() } else {
       const d = await res.json(); alert(`Delete failed: ${d.error}`)
       setDeleting(false)
     }
+    }})
   }
 
-  const deleteClip = async (clipName: string, clipUrl: string) => {
-    if (!confirm('Delete this clip?')) return
-    setDeletingClip(clipName)
-    const res = await fetch(`/api/stories/${story.story_id}/clip?path=${encodeURIComponent(clipName)}`, { method: 'DELETE' })
-    const data = await res.json()
-    if (res.ok) {
-      const remaining = data.remainingClips || clips.filter(c => c.name !== clipName)
-      setClips(remaining)
-      onUpdate({ ...story, clips: remaining, scenes_count: String(remaining.length) })
-      if (selectedClip?.url === clipUrl) { setSelectedClip(null); setIsPlaying(false) }
-    }
-    setDeletingClip('')
+  const deleteClip = (clipName: string, clipUrl: string) => {
+    setConfirm({ open: true, title: 'Delete Clip?', message: `Delete scene_${clipName.match(/scene_(\d+)/)?.[1]}.mp4 from cloud storage?`, action: async () => {
+      setDeletingClip(clipName)
+      const res = await fetch(`/api/stories/${story.story_id}/clip?path=${encodeURIComponent(clipName)}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (res.ok) {
+        const remaining = data.remainingClips || clips.filter(c => c.name !== clipName)
+        setClips(remaining)
+        onUpdate({ ...story, clips: remaining, scenes_count: String(remaining.length) })
+        if (selectedClip?.url === clipUrl) { setSelectedClip(null); setIsPlaying(false) }
+      }
+      setDeletingClip('')
+    }})
   }
 
   const selectClip = (clip: { url: string; name: string }) => {
@@ -721,6 +790,13 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
 
   return (
     <div className="h-full flex flex-col bg-[#F5F5F7]">
+      <ConfirmDialog
+        open={confirm.open}
+        title={confirm.title}
+        message={confirm.message}
+        onConfirm={() => { setConfirm(c => ({...c, open: false})); confirm.action() }}
+        onCancel={() => setConfirm(c => ({...c, open: false}))}
+      />
 
       {/* ── Story Header ─────────────────────────────────────────── */}
       <div className="shrink-0 bg-white border-b border-gray-200">
@@ -804,25 +880,49 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
               ) : (
                 <div className="bg-white rounded-2xl overflow-hidden border border-gray-200/60">
                   <div className="p-4 border-b border-gray-100">
-                    {/* Clip grid */}
-                    <div className="grid grid-cols-5 gap-2 mb-3">
+                    {/* Clip grid — improved tiles */}
+                    <div className="grid grid-cols-4 sm:grid-cols-5 gap-2 mb-3">
                       {clips.map(clip => {
                         const num = clip.name.match(/scene_(\d+)/)?.[1] || '?'
                         const isActive = selectedClip?.url === clip.url
                         return (
                           <div key={clip.name} className="relative group">
                             <button onClick={() => selectClip(clip)}
-                              className={`w-full aspect-[9/16] rounded-xl flex flex-col items-center justify-center transition-all
-                                ${isActive ? 'bg-[#111111] text-white shadow-md' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                              {isActive
-                                ? <span className="text-lg">▶</span>
-                                : <><span className="text-sm font-bold text-gray-700">{num}</span><span className="text-xs text-gray-400">S</span></>
-                              }
+                              className={`w-full aspect-[9/16] rounded-2xl flex flex-col items-center justify-center transition-all relative overflow-hidden
+                                ${isActive
+                                  ? 'bg-[#111111] shadow-lg ring-2 ring-[#111111] ring-offset-2'
+                                  : 'bg-gradient-to-b from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300'
+                                }`}>
+                              {isActive ? (
+                                <div className="flex flex-col items-center gap-1">
+                                  <div className="w-8 h-8 bg-white/20 rounded-full flex items-center justify-center">
+                                    <span className="text-white text-sm ml-0.5">▶</span>
+                                  </div>
+                                  <span className="text-white/60 text-xs">S{num}</span>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col items-center gap-0.5">
+                                  <span className="text-lg font-black text-gray-600">{num}</span>
+                                  <span className="text-xs text-gray-400 font-medium">Scene</span>
+                                </div>
+                              )}
                             </button>
-                            <button onClick={() => deleteClip(clip.name, clip.url)} disabled={!!deletingClip}
-                              className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white rounded-full text-xs items-center justify-center hidden group-hover:flex hover:bg-red-600">
+                            {/* Delete button — tap/hover reveal */}
+                            <button
+                              onClick={() => deleteClip(clip.name, clip.url)}
+                              disabled={!!deletingClip}
+                              className="absolute top-1 right-1 w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs items-center justify-center opacity-0 group-hover:opacity-100 md:flex hidden shadow-sm disabled:opacity-30 transition-opacity">
                               ×
                             </button>
+                            {/* Mobile: long press or tap corner */}
+                            {!isActive && (
+                              <button
+                                onClick={() => deleteClip(clip.name, clip.url)}
+                                disabled={!!deletingClip}
+                                className="md:hidden absolute top-1 right-1 w-5 h-5 bg-white/80 text-red-500 rounded-full text-xs items-center justify-center flex shadow-sm">
+                                ×
+                              </button>
+                            )}
                           </div>
                         )
                       })}
