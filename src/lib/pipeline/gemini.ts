@@ -164,6 +164,57 @@ STRICT RULES:
 8. Return ONLY the complete rewritten prompt text. No conversational introductions, explanations, or markdown blocks.`,
 }
 
+// ─── Veo prompt builder — ALWAYS programmatically correct ────────────────────
+// Gemini often forgets to include anchors. This guarantees structure every time.
+
+function buildVeoPrompt(
+  rawPrompt: string,
+  primaryAnchor: string,
+  secondaryAnchor: string,
+  hasSecondary: boolean
+): string {
+  // Extract the action part: strip any existing anchor and style suffix
+  let action = rawPrompt
+
+  // Strip primary anchor if Gemini included it (avoid duplication)
+  if (primaryAnchor && action.startsWith(primaryAnchor)) {
+    action = action.slice(primaryAnchor.length).trim()
+  }
+
+  // Strip "Wide two-shot framing." prefix if present
+  if (action.startsWith('Wide two-shot framing.')) {
+    action = action.replace('Wide two-shot framing.', '').trim()
+  }
+
+  // Strip secondary anchor if present
+  if (hasSecondary && secondaryAnchor && action.startsWith(secondaryAnchor)) {
+    action = action.slice(secondaryAnchor.length).trim()
+  }
+
+  // Strip style suffix (everything from STYLE_SUFFIX start)
+  const styleIdx = action.indexOf(STYLE_SUFFIX.slice(0, 30))
+  if (styleIdx !== -1) action = action.slice(0, styleIdx).trim()
+
+  // Also strip "Pixar-inspired" trailing suffix
+  const pixarIdx = action.indexOf('Pixar-inspired')
+  if (pixarIdx !== -1) action = action.slice(0, pixarIdx).trim()
+
+  // Strip trailing "Vertical 9:16..."
+  const vertIdx = action.indexOf('Vertical 9:16')
+  if (vertIdx !== -1) action = action.slice(0, vertIdx).trim()
+
+  // Rebuild with guaranteed structure
+  let prompt = primaryAnchor
+
+  if (hasSecondary && secondaryAnchor) {
+    prompt += ` Wide two-shot framing. ${secondaryAnchor}`
+  }
+
+  prompt += ` ${action} ${STYLE_SUFFIX} Vertical 9:16, no text or captions in frame, no logos or brand marks.`
+
+  return prompt
+}
+
 // ─── Load prompt from DB (with fallback to default) ──────────────────────────
 
 async function getPrompt(key: keyof typeof DEFAULT_PROMPTS): Promise<string> {
@@ -267,21 +318,30 @@ Your output must be a SINGLE JSON object with these exact keys:
     throw new Error(`character_anchor too short (${primaryAnchor.split(' ').length} words) — needs 30-60 words for Veo consistency`)
   }
 
-  const scenes: Scene[] = (parsed.scenes as Record<string, unknown>[]).map(s => ({
-    scene_num: String(s.scene_num).padStart(2, '0'),
-    beat: String(s.beat || ''),
-    video_prompt: String(s.video_prompt || ''),
-    tts_text: String(s.tts_text || ''),
-    caption: String(s.caption || ''),
-    primary_anchor: primaryAnchor,
-    secondary_anchor: secondaryAnchor,
-    has_secondary: secondaryAnchor.length > 10,
-  }))
+  const hasSecondary = secondaryAnchor.length > 10
 
-  // Validate each scene has required fields
+  const scenes: Scene[] = (parsed.scenes as Record<string, unknown>[]).map(s => {
+    const rawPrompt = String(s.video_prompt || '')
+
+    // PROGRAMMATICALLY guarantee anchor is at start — never trust Gemini to include it
+    const builtPrompt = buildVeoPrompt(rawPrompt, primaryAnchor, secondaryAnchor, hasSecondary)
+
+    return {
+      scene_num: String(s.scene_num).padStart(2, '0'),
+      beat: String(s.beat || ''),
+      video_prompt: builtPrompt,
+      tts_text: String(s.tts_text || ''),
+      caption: String(s.caption || ''),
+      primary_anchor: primaryAnchor,
+      secondary_anchor: secondaryAnchor,
+      has_secondary: hasSecondary,
+    }
+  })
+
+  // Validate each scene
   for (const scene of scenes) {
-    if (!scene.video_prompt || scene.video_prompt.length < 50) {
-      throw new Error(`Scene ${scene.scene_num} video_prompt too short or missing`)
+    if (!scene.video_prompt || scene.video_prompt.length < 80) {
+      throw new Error(`Scene ${scene.scene_num} video_prompt too short after reconstruction`)
     }
     if (!scene.tts_text || !scene.tts_text.match(/[ऀ-ॿ]/)) {
       throw new Error(`Scene ${scene.scene_num} tts_text missing or not in Hindi Devanagari`)
