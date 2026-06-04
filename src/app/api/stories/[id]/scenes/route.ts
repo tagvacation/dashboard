@@ -35,7 +35,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 // Body: { scene_num: "03", video_prompt?: "custom override prompt" }
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: storyId } = await params
-  const { scene_num, video_prompt: customPrompt, credential_id } = await req.json()
+  const { scene_num, video_prompt: customPrompt, credential_id, model } = await req.json()
   const ctx = await getContext(credential_id)
 
   if (!scene_num) return NextResponse.json({ error: 'scene_num required' }, { status: 400 })
@@ -63,7 +63,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     })
     await sceneJobsDb.update(storyId, scene_num, nextAttempt, { status: 'submitted' })
 
-    const opId = await submitVeoClip(promptToUse, ctx)
+    const opId = await submitVeoClip(promptToUse, ctx, model)
     await sceneJobsDb.update(storyId, scene_num, nextAttempt, { operation_id: opId, status: 'polling' })
 
     // Poll

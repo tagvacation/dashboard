@@ -123,8 +123,8 @@ async function processAllScenes(
     })
   ))
 
-  // Semaphore: max 3 concurrent Veo requests to avoid 429 quota exceeded
-  const MAX_CONCURRENT = 3
+  // Semaphore: max 2 concurrent Veo requests to avoid 429 quota exceeded
+  const MAX_CONCURRENT = 2
   let active = 0
   const queue: (() => void)[] = []
   const acquire = () => new Promise<void>(resolve => {

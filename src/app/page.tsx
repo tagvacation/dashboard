@@ -1013,7 +1013,15 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
   const [retrying, setRetrying] = useState<string | null>(null)
   const [editingPrompt, setEditingPrompt] = useState<{ key: string; value: string } | null>(null)
   const [retryCred, setRetryCred] = useState<string>('default')
+  const [retryModel, setRetryModel] = useState<string>('veo-3.1-lite-generate-001')
   const [credList, setCredList] = useState<{ id: string; name: string }[]>([])
+  const [fixingPrompt, setFixingPrompt] = useState<string | null>(null)
+
+  const VEO_MODELS = [
+    { id: 'veo-3.1-lite-generate-001', label: 'Veo 3.1 Lite', cost: '₹15/clip' },
+    { id: 'veo-3.1-generate-001',      label: 'Veo 3.1 Full', cost: '₹100/clip' },
+    { id: 'veo-3.0-generate-001',      label: 'Veo 3.0',      cost: 'Higher' },
+  ]
 
   const load = async () => {
     setLoading(true)
@@ -1034,12 +1042,29 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
     const res = await fetch(`/api/stories/${storyId}/scenes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scene_num: job.scene_num, video_prompt: promptToUse, credential_id: retryCred }),
+      body: JSON.stringify({ scene_num: job.scene_num, video_prompt: promptToUse, credential_id: retryCred, model: retryModel }),
     })
     const data = await res.json()
     if (res.ok) { onClipGenerated(); await load() }
     else alert(`Retry failed: ${data.error}`)
     setRetrying(null); setEditingPrompt(null)
+  }
+
+  // AI fix prompt
+  const fixWithAI = async (key: string, currentPrompt: string, errorHint?: string) => {
+    setFixingPrompt(key)
+    const res = await fetch('/api/prompt-fix', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: currentPrompt, issue: errorHint || 'content filter rejection' }),
+    })
+    const data = await res.json()
+    if (res.ok && data.fixed) {
+      setEditingPrompt({ key, value: data.fixed })
+    } else {
+      alert(`AI fix failed: ${data.error}`)
+    }
+    setFixingPrompt(null)
   }
 
   // Group by scene_num, show all attempts
@@ -1070,7 +1095,7 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
       const res = await fetch(`/api/stories/${storyId}/scenes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scene_num: job.scene_num, video_prompt: job.video_prompt, credential_id: retryCred }),
+        body: JSON.stringify({ scene_num: job.scene_num, video_prompt: job.video_prompt, credential_id: retryCred, model: retryModel }),
       })
       if (res.ok) await load()
       else console.error(`Retry failed for scene ${job.scene_num}`)
@@ -1098,28 +1123,41 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
           <button onClick={load} className="ml-auto text-xs text-gray-400 hover:text-gray-600">↺ Refresh</button>
         </div>
 
-        {/* Account selector + retry all — only show when there are pending scenes */}
+        {/* Account + Model selector + retry all */}
         {needsRetry > 0 && (
-          <div className="flex items-center gap-2 flex-wrap bg-gray-50 border border-gray-200 rounded-xl px-3 py-2">
-            <span className="text-xs text-gray-500 font-medium shrink-0">Account:</span>
-            <div className="flex gap-1.5 flex-wrap flex-1">
-              {credList.map(cred => (
-                <button key={cred.id} onClick={() => setRetryCred(cred.id)}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${
-                    retryCred === cred.id
-                      ? 'bg-[#111111] text-white border-[#111111]'
-                      : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
-                  }`}>
-                  {cred.name}
-                </button>
-              ))}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl px-3 py-2.5 space-y-2">
+            {/* Account picker */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500 font-medium w-14 shrink-0">Account</span>
+              <div className="flex gap-1.5 flex-wrap">
+                {credList.map(cred => (
+                  <button key={cred.id} onClick={() => setRetryCred(cred.id)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${retryCred === cred.id ? 'bg-[#111111] text-white border-[#111111]' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
+                    {cred.name}
+                  </button>
+                ))}
+              </div>
             </div>
-            <button onClick={retryAll} disabled={retrying === 'all'}
-              className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold">
-              {retrying === 'all' ? (
-                <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Retrying...</>
-              ) : `↺ Retry All ${needsRetry}`}
-            </button>
+            {/* Model picker */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs text-gray-500 font-medium w-14 shrink-0">Model</span>
+              <div className="flex gap-1.5 flex-wrap">
+                {VEO_MODELS.map(m => (
+                  <button key={m.id} onClick={() => setRetryModel(m.id)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${retryModel === m.id ? 'bg-[#111111] text-white border-[#111111]' : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'}`}>
+                    {m.label} <span className="opacity-50">{m.cost}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button onClick={retryAll} disabled={retrying === 'all'}
+                className="flex items-center gap-1.5 px-4 py-2 bg-[#111111] hover:bg-black disabled:opacity-50 text-white rounded-xl text-xs font-semibold">
+                {retrying === 'all' ? (
+                  <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> Retrying...</>
+                ) : `↺ Retry All ${needsRetry}`}
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -1174,14 +1212,25 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
                           <p className="text-sm text-gray-800 bg-white rounded-xl px-3 py-2 border border-gray-200">{job.tts_text}</p>
                         </div>
 
-                        {/* Video prompt — editable */}
+                        {/* Video prompt — editable with AI fix */}
                         <div>
                           <div className="flex items-center justify-between mb-1">
                             <p className="text-xs font-semibold text-gray-500">Video Prompt (Veo)</p>
-                            <button onClick={() => setEditingPrompt(isEditing ? null : { key: editKey, value: job.video_prompt })}
-                              className="text-xs text-gray-400 hover:text-gray-700">
-                              {isEditing ? '✕ Cancel edit' : '✏️ Edit'}
-                            </button>
+                            <div className="flex gap-2">
+                              {/* AI Fix button */}
+                              <button
+                                onClick={() => fixWithAI(editKey, isEditing ? (editingPrompt?.value || job.video_prompt) : job.video_prompt, job.error_message)}
+                                disabled={fixingPrompt === editKey}
+                                className="flex items-center gap-1 text-xs text-purple-500 hover:text-purple-700 font-medium disabled:opacity-50">
+                                {fixingPrompt === editKey ? (
+                                  <><svg className="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg> AI fixing...</>
+                                ) : '✦ Fix with AI'}
+                              </button>
+                              <button onClick={() => setEditingPrompt(isEditing ? null : { key: editKey, value: job.video_prompt })}
+                                className="text-xs text-gray-400 hover:text-gray-700">
+                                {isEditing ? '✕ Cancel' : '✏️ Edit'}
+                              </button>
+                            </div>
                           </div>
                           {isEditing ? (
                             <textarea
@@ -1189,9 +1238,10 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
                               onChange={e => setEditingPrompt({ key: editKey, value: e.target.value })}
                               rows={8}
                               className="w-full px-3 py-2 text-xs font-mono bg-white border border-gray-300 rounded-xl focus:outline-none focus:border-indigo-400 resize-y leading-relaxed"
+                              placeholder="Edit the prompt or use ✦ Fix with AI above..."
                             />
                           ) : (
-                            <p className="text-xs font-mono text-gray-600 bg-white rounded-xl px-3 py-2 border border-gray-200 leading-relaxed whitespace-pre-wrap">
+                            <p className="text-xs font-mono text-gray-600 bg-white rounded-xl px-3 py-2 border border-gray-200 leading-relaxed whitespace-pre-wrap line-clamp-4">
                               {job.video_prompt}
                             </p>
                           )}

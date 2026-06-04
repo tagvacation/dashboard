@@ -9,27 +9,47 @@ function veoBase(ctx: GcpContext) {
   return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${VEO_MODEL}`
 }
 
-export async function submitVeoClip(prompt: string, ctx: GcpContext): Promise<string> {
-  const token = await getAccessToken(ctx)
-  const res = await fetch(`${veoBase(ctx)}:predictLongRunning`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      instances: [{ prompt }],
-      parameters: {
-        aspectRatio: '9:16',
-        sampleCount: 1,
-        durationSeconds: 8,
-        resolution: '1080p',
-        personGeneration: 'allow_all',
-        generateAudio: false,
-      },
-    }),
-  })
-  if (!res.ok) throw new Error(`Veo submit error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
-  if (!data.name) throw new Error('Veo submit returned no operation name')
-  return data.name as string
+export async function submitVeoClip(prompt: string, ctx: GcpContext, model?: string): Promise<string> {
+  const veoModel = model || VEO_MODEL
+  const base = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${veoModel}`
+
+  // Retry up to 3 times on 429 with backoff
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      const waitMs = attempt * 30_000 // 30s, 60s backoff
+      console.log(`Veo 429 backoff: waiting ${waitMs / 1000}s before retry ${attempt + 1}`)
+      await sleep(waitMs)
+    }
+
+    const token = await getAccessToken(ctx)
+    const res = await fetch(`${base}:predictLongRunning`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        instances: [{ prompt }],
+        parameters: {
+          aspectRatio: '9:16',
+          sampleCount: 1,
+          durationSeconds: 8,
+          resolution: '1080p',
+          personGeneration: 'allow_all',
+          generateAudio: false,
+        },
+      }),
+    })
+
+    if (res.status === 429) {
+      if (attempt === 2) throw new Error(`Veo submit error 429: quota exceeded after retries`)
+      continue
+    }
+
+    if (!res.ok) throw new Error(`Veo submit error ${res.status}: ${await res.text()}`)
+    const data = await res.json()
+    if (!data.name) throw new Error('Veo submit returned no operation name')
+    return data.name as string
+  }
+
+  throw new Error('Veo submit failed after retries')
 }
 
 interface PollResult {
