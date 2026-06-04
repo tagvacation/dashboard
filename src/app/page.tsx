@@ -1050,13 +1050,20 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
     setRetrying(null); setEditingPrompt(null)
   }
 
-  // AI fix prompt
-  const fixWithAI = async (key: string, currentPrompt: string, errorHint?: string) => {
+  // AI fix prompt — passes anchors separately so they're never rewritten
+  const fixWithAI = async (key: string, job: SceneJob, errorHint?: string) => {
+    const currentPrompt = editingPrompt?.key === key ? (editingPrompt.value || job.video_prompt) : job.video_prompt
     setFixingPrompt(key)
     const res = await fetch('/api/prompt-fix', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: currentPrompt, issue: errorHint || 'content filter rejection' }),
+      body: JSON.stringify({
+        prompt: currentPrompt,
+        primary_anchor: job.primary_anchor,
+        secondary_anchor: job.secondary_anchor,
+        has_secondary: job.secondary_anchor && job.secondary_anchor.length > 10,
+        issue: errorHint || job.error_message || 'content filter rejection',
+      }),
     })
     const data = await res.json()
     if (res.ok && data.fixed) {
@@ -1219,7 +1226,7 @@ function SceneJobsPanel({ storyId, onClipGenerated }: { storyId: string; onClipG
                             <div className="flex gap-2">
                               {/* AI Fix button */}
                               <button
-                                onClick={() => fixWithAI(editKey, isEditing ? (editingPrompt?.value || job.video_prompt) : job.video_prompt, job.error_message)}
+                                onClick={() => fixWithAI(editKey, job, job.error_message)}
                                 disabled={fixingPrompt === editKey}
                                 className="flex items-center gap-1 text-xs text-purple-500 hover:text-purple-700 font-medium disabled:opacity-50">
                                 {fixingPrompt === editKey ? (
