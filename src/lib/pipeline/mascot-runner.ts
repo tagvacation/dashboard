@@ -136,6 +136,8 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
         const prefix: string[] = []
         if (script.world_description_en) prefix.push(`Setting (identical every scene for continuity): ${script.world_description_en}`)
         if (script.voice_persona) prefix.push(`The mascot speaks in the SAME voice every scene: ${script.voice_persona}.`)
+        const villain = concept.villain_description_en as string | undefined
+        if (villain) prefix.push(`Villain (render identically whenever it appears): ${villain}`)
         const vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt
         const opId = await submitVeoClip(vp, ctx, MASCOT_VEO_MODEL,
           { gcsUri: mascotGcs, mimeType: 'image/png' }, true)

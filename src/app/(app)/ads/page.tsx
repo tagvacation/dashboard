@@ -36,6 +36,33 @@ export default function CreateAdPage() {
   const [creds, setCreds] = useState<CloudCred[]>([])
   const [credentialId, setCredentialId] = useState<string>('default')
   const [adStyle, setAdStyle] = useState<'mascot' | 'emotional'>('mascot')
+  const [productUrl, setProductUrl] = useState('')
+  const [fetchingUrl, setFetchingUrl] = useState(false)
+  const [prefill, setPrefill] = useState<{ imageGcsUri?: string; cutoutGcsUri?: string } | null>(null)
+
+  async function fetchFromUrl() {
+    if (!productUrl.trim()) return
+    setFetchingUrl(true); setError('')
+    try {
+      const r = await fetch('/api/ads/extract-url', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: productUrl.trim() }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Could not fetch product')
+      if (d.name) setName(d.name)
+      if (d.category) setCategory(d.category)
+      if (d.price) setPrice(String(d.price))
+      if (Array.isArray(d.benefits) && d.benefits.length) setBenefits(d.benefits.slice(0, 5))
+      if (d.target_audience) setAudience(d.target_audience)
+      if (d.imagePublicUrl) setImagePreview(d.imagePublicUrl)
+      if (d.imageGcsUri) { setPrefill({ imageGcsUri: d.imageGcsUri, cutoutGcsUri: d.cutoutGcsUri }); setImageFile(null) }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not fetch product')
+    } finally {
+      setFetchingUrl(false)
+    }
+  }
 
   useEffect(() => {
     fetch('/api/credentials').then(r => r.json()).then(d => {
@@ -82,6 +109,10 @@ export default function CreateAdPage() {
         const up = await upRes.json()
         imageGcsUri = up.gcsUri
         cutoutGcsUri = up.cutoutGcsUri || undefined
+      } else if (prefill?.imageGcsUri) {
+        // Image came from URL auto-fill (already uploaded + bg-removed server-side).
+        imageGcsUri = prefill.imageGcsUri
+        cutoutGcsUri = prefill.cutoutGcsUri
       }
 
       const res = await fetch('/api/ads/generate', {
@@ -121,6 +152,24 @@ export default function CreateAdPage() {
       </div>
 
       <div className="space-y-5">
+        {/* Quick start: import from product URL */}
+        <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/20 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-sm font-semibold">✨ Quick start — import from product URL</span>
+          </div>
+          <p className="text-xs text-white/40 mb-3">Paste a product page link (Shopify works best). We&apos;ll auto-fill the details and grab the product image.</p>
+          <div className="flex gap-2">
+            <input value={productUrl} onChange={e => setProductUrl(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); fetchFromUrl() } }}
+              placeholder="https://yourstore.com/products/..."
+              className="flex-1 px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
+            <button type="button" onClick={fetchFromUrl} disabled={fetchingUrl || !productUrl.trim()}
+              className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 rounded-xl text-sm font-semibold whitespace-nowrap transition-all">
+              {fetchingUrl ? 'Fetching…' : 'Fetch details'}
+            </button>
+          </div>
+        </div>
+
         {/* 0. Ad style */}
         <FormCard step="00" title="Ad style" subtitle="Pick the creative format">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

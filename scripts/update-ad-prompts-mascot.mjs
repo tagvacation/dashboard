@@ -51,10 +51,12 @@ The PRODUCT is a 3D mascot (defined by mascot_image_prompt). Each scene is gener
 
 You receive product details + concept (mascot_image_prompt, mascot_personality, voice_persona, villain_description_en, world_description_en, tagline_hindi, headline_hi, cta_hi, ad_concept) and a required scenes_count. Produce EXACTLY scenes_count scenes (8s each).
 
-ACTION ARC (scale across scenes_count): the mascot ARRIVES with impact → the villain strikes and threatens the world → escalating CLASHES, each bigger than the last → a turning point → an EPIC victory + the CTA line. Raise the stakes every scene.
+ACTION ARC (scale across scenes_count): SCENE 1 is a punchy COLD-OPEN HOOK — grab attention in the first 1-2 seconds with immediate drama (a sudden threat, a dramatic entrance, a dynamic reveal) before anything calm. Then: the villain strikes and threatens the world → escalating CLASHES, each bigger than the last → a turning point → an EPIC victory + the CTA line. Raise the stakes every scene.
 
 ═══ VEO video_prompt RULES (CRITICAL) ═══
 - HIGH-ENERGY ACTION in EVERY scene: the mascot leaps, dashes, dodges, unleashes its signature power; dramatic FAST camera moves, slow-motion impacts, explosions of light and particles, debris, shockwaves, dynamic angles. AVOID static talking-head shots — the dialogue happens DURING the action.
+- CAMERA: give EACH scene a DISTINCT camera move (e.g. fast push-in, low-angle hero shot, sweeping orbit, crane up, whip-pan, dramatic dolly) — never repeat the same framing twice in a row.
+- VILLAIN: when the villain appears, render it EXACTLY as villain_description_en every time — keep it visually identical across scenes.
 - EVERY scene set in the SAME world: OPEN each video_prompt by re-establishing world_description_en (same place, same lighting and mood). The background must be RICH and detailed — NEVER plain or empty.
 - Animate the SAME mascot; refer to it as "the [product] mascot". Use ONLY its signature power from the concept (no new/unrelated props, no hardcoded items).
 - The mascot speaks ONE short Hindi line in the SAME voice_persona every scene — put the spoken line in double quotes and restate the voice (gender/age/energy) so it stays consistent.

@@ -13,6 +13,7 @@
 import { Storage } from '@google-cloud/storage'
 import { spawn } from 'child_process'
 import { mkdir, writeFile, readFile, rm } from 'fs/promises'
+import { readdirSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { GcpContext } from './auth'
@@ -69,6 +70,29 @@ function probeHasAudio(file: string): Promise<boolean> {
     p.on('error', () => resolve(false))
   })
 }
+
+function probeDuration(file: string): Promise<number> {
+  return new Promise(resolve => {
+    const p = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    p.stdout?.on('data', d => { out += d.toString() })
+    p.on('close', () => resolve(parseFloat(out) || 0))
+    p.on('error', () => resolve(0))
+  })
+}
+
+// Optional background-music bed: drop a royalty-free track in src/assets/music/.
+// If none present, ads simply use dialogue + ambient (no music).
+function findMusic(): string | null {
+  try {
+    const dir = join(process.cwd(), 'src/assets/music')
+    const f = readdirSync(dir).find(x => /\.(mp3|m4a|aac|wav|ogg)$/i.test(x))
+    return f ? join(dir, f) : null
+  } catch { return null }
+}
+
+// Subtle cinematic grade so independently-generated clips share one look.
+const GRADE = 'eq=contrast=1.06:saturation=1.12:gamma=0.97,colorbalance=rm=0.03:rh=0.04'
 
 // Common encode flags so every segment is concat-compatible (-c copy join).
 const VENC = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p', '-r', String(FPS)]
@@ -223,7 +247,7 @@ export async function composeMascotAd({ storyId, scenes, endcard, productCutoutG
       }
       if (!hasAudio) { inputs.push('-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo'); silenceIdx = idx++ }
 
-      const f: string[] = [`[0:v]scale=${AD_W}:${AD_H}:force_original_aspect_ratio=decrease,pad=${AD_W}:${AD_H}:(ow-iw)/2:(oh-ih)/2,setsar=1[bg]`]
+      const f: string[] = [`[0:v]scale=${AD_W}:${AD_H}:force_original_aspect_ratio=decrease,pad=${AD_W}:${AD_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,${GRADE}[bg]`]
       let last = 'bg'
       if (cIdx >= 0) {
         f.push(`[${cIdx}:v]format=rgba,fade=in:st=0.3:d=0.5:alpha=1[cap]`)
@@ -259,11 +283,46 @@ export async function composeMascotAd({ storyId, scenes, endcard, productCutoutG
     ])
     segments.push(endcardMp4)
 
-    // 3. Concat + upload.
-    const concatList = join(work, 'concat.txt')
-    await writeFile(concatList, segments.map(p => `file '${p}'`).join('\n'))
+    // 3. Assemble: crossfade transitions between scenes + optional background music.
+    //    Falls back to a plain concat if the complex graph errors, so we always ship a reel.
     const final = join(work, 'final.mp4')
-    await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', final])
+    const music = findMusic()
+    try {
+      const durs: number[] = []
+      for (const s of segments) durs.push(await probeDuration(s))
+      const T = 0.4 // crossfade seconds
+      const inputs: string[] = []
+      for (const s of segments) inputs.push('-i', s)
+      let musicIdx = -1
+      if (music) { inputs.push('-stream_loop', '-1', '-i', music); musicIdx = segments.length }
+
+      const fc: string[] = []
+      let vlab = '[0:v]', alab = '[0:a]', acc = 0
+      for (let i = 1; i < segments.length; i++) {
+        acc += durs[i - 1]
+        const off = (acc - i * T).toFixed(3)
+        const vo = `[v${i}]`, ao = `[a${i}]`
+        fc.push(`${vlab}[${i}:v]xfade=transition=fade:duration=${T}:offset=${off}${vo}`)
+        fc.push(`${alab}[${i}:a]acrossfade=d=${T}${ao}`)
+        vlab = vo; alab = ao
+      }
+      let aFinal = alab
+      if (music) {
+        fc.push(`[${musicIdx}:a]volume=0.16[mus]`)
+        fc.push(`${alab}[mus]amix=inputs=2:duration=first:dropout_transition=0[amix]`)
+        aFinal = '[amix]'
+      }
+      await runFfmpeg([
+        '-y', ...inputs,
+        '-filter_complex', fc.join(';'),
+        '-map', vlab, '-map', aFinal,
+        ...VENC, ...AENC, '-movflags', '+faststart', final,
+      ])
+    } catch {
+      const concatList = join(work, 'concat.txt')
+      await writeFile(concatList, segments.map(p => `file '${p}'`).join('\n'))
+      await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', final])
+    }
 
     const finalGcsPath = `stories/${storyId}/final/reel.mp4`
     await bucket.file(finalGcsPath).save(await readFile(final), {

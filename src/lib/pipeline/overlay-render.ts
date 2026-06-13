@@ -95,42 +95,43 @@ export interface EndcardSpec {
   headlineHi: string
   priceText?: string   // e.g. "₹779  (Pack of 2)"
   ctaHi: string        // e.g. "आज ही ऑर्डर करें"
-  accent?: string      // brand accent hex, default plum to match Derma Co
+  accent?: string      // brand accent hex (CTA + glow), default warm orange
 }
 
-/** Opaque end-card: gradient bg + (optional) product cutout + headline + price + CTA. */
+/** Opaque end-card: warm gradient bg + (optional) large product cutout + headline + price + CTA. */
 export async function renderEndcard(spec: EndcardSpec, productCutout?: Buffer | null): Promise<Buffer> {
   ensureFonts()
-  const accent = spec.accent || '#7b2d8e'
+  const accent = spec.accent || '#f5811f'
   const canvas = createCanvas(AD_W, AD_H)
   const ctx = canvas.getContext('2d')
 
-  // Background: deep vertical gradient + radial glow behind product.
+  // Background: warm dark vertical gradient + a strong radial brand glow behind product.
   const bg = ctx.createLinearGradient(0, 0, 0, AD_H)
-  bg.addColorStop(0, '#1a1020')
-  bg.addColorStop(1, '#0c0710')
+  bg.addColorStop(0, '#241402')
+  bg.addColorStop(0.55, '#150b04')
+  bg.addColorStop(1, '#0a0603')
   ctx.fillStyle = bg
   ctx.fillRect(0, 0, AD_W, AD_H)
 
-  const glow = ctx.createRadialGradient(AD_W / 2, AD_H * 0.42, 60, AD_W / 2, AD_H * 0.42, 620)
-  glow.addColorStop(0, `${accent}66`)
+  const glow = ctx.createRadialGradient(AD_W / 2, AD_H * 0.40, 80, AD_W / 2, AD_H * 0.40, 780)
+  glow.addColorStop(0, `${accent}80`)
   glow.addColorStop(1, 'rgba(0,0,0,0)')
   ctx.fillStyle = glow
   ctx.fillRect(0, 0, AD_W, AD_H)
 
-  // Product cutout — fit within a centered box in the upper-middle (optional).
+  // Product cutout — large, centered in the upper half (optional).
   if (productCutout) {
     const img = await loadImage(productCutout)
-    const boxW = AD_W * 0.7
-    const boxH = AD_H * 0.42
+    const boxW = AD_W * 0.82
+    const boxH = AD_H * 0.52
     const scale = Math.min(boxW / img.width, boxH / img.height)
     const dw = img.width * scale
     const dh = img.height * scale
     const dx = (AD_W - dw) / 2
-    const dy = AD_H * 0.12
-    ctx.shadowColor = 'rgba(0,0,0,0.5)'
-    ctx.shadowBlur = 50
-    ctx.shadowOffsetY = 24
+    const dy = AD_H * 0.08
+    ctx.shadowColor = 'rgba(0,0,0,0.55)'
+    ctx.shadowBlur = 60
+    ctx.shadowOffsetY = 28
     ctx.drawImage(img, dx, dy, dw, dh)
     ctx.shadowColor = 'transparent'
     ctx.shadowBlur = 0
@@ -140,8 +141,8 @@ export async function renderEndcard(spec: EndcardSpec, productCutout?: Buffer | 
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
 
-  // Headline — lower when there's a product image, more centered when text-only.
-  let y = productCutout ? AD_H * 0.62 : AD_H * 0.42
+  // Headline — sits just under the (larger) product, tighter layout.
+  let y = productCutout ? AD_H * 0.68 : AD_H * 0.42
   const hSize = 72
   ctx.font = `${hSize}px ${FAMILY}`
   ctx.fillStyle = '#ffffff'
