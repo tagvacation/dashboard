@@ -9,11 +9,13 @@ import { defaultContext, loadGcpContext, getAccessToken } from './auth'
 import type { GcpContext } from './auth'
 import { submitVeoClip, pollVeoOperation } from './veo'
 import { generateFullNarration } from './tts'
-import { mergeClipsWithAudio } from './merge'
+import { composeAd, type ComposeScene } from './ad-composite'
+import { downloadGsUri } from '../gcs'
 import { fetchWithRetry } from './fetch-retry'
 
-// AI Ads use the Full model — much better image-to-video fidelity than Lite.
-// Override via env var if quota/cost is an issue.
+// Hybrid ads: Veo only makes product-free b-roll, so the heavy Full model isn't required.
+// Default to Full for realism; set AD_VEO_MODEL to a cheaper tier (e.g. veo-3.1-lite-generate-001)
+// to cut cost — the product is composited in post regardless of clip fidelity.
 const AD_VEO_MODEL = process.env.AD_VEO_MODEL || 'veo-3.1-generate-001'
 
 void Storage // imported for ctx-aware storage below
@@ -29,23 +31,32 @@ interface AdMeta {
     duration_sec: number
   }
   imageGcsUri: string | null
+  cutoutGcsUri?: string | null   // transparent product cutout (composited in post)
+  ad_style?: 'emotional' | 'mascot'  // emotional = hybrid b-roll; mascot = character drama
   credentialId?: string | null   // which Cloud Account to use (null = env default)
+}
+
+interface AdSceneOverlay {
+  product?: boolean                              // composite the product cutout this scene?
+  product_motion?: 'rise' | 'zoom' | 'center'
+  caption_hi?: string                            // short on-screen Hindi caption
 }
 
 interface AdScene {
   scene_num: number
   beat: string
-  video_prompt: string
+  video_prompt: string       // Veo b-roll ONLY — no product, no text
   tts_text: string
-  caption?: string
+  overlay?: AdSceneOverlay
 }
 
 interface AdScript {
   ad_title_hindi: string
   tagline_hindi: string
-  product_visual_description_en: string  // new name (was product_anchor_en in monologue format)
-  product_anchor_en?: string             // legacy field — kept for back-compat with older runs
   voice_personality: string
+  headline_hi?: string       // end-card headline
+  price_text?: string        // end-card price line
+  cta_hi?: string            // end-card CTA
   scenes: AdScene[]
   total_scenes: number
   total_duration_sec: number
@@ -75,15 +86,24 @@ async function gcsExists(ctx: GcpContext, path: string): Promise<boolean> {
 // ─── Gemini call (Vertex AI) ─────────────────────────────────────────────────
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
-async function callGemini(systemPrompt: string, userPrompt: string, ctx: GcpContext, temperature = 0.85): Promise<Record<string, unknown>> {
+export async function callGemini(
+  systemPrompt: string,
+  userPrompt: string,
+  ctx: GcpContext,
+  temperature = 0.85,
+  image?: { data: string; mimeType: string },   // inline product image for grounding
+): Promise<Record<string, unknown>> {
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
+  const parts: Record<string, unknown>[] = []
+  if (image) parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } })
+  parts.push({ text: userPrompt })
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+      contents: [{ role: 'user', parts }],
       generationConfig: { temperature, maxOutputTokens: 8192, responseMimeType: 'application/json' },
     }),
   }, { label: 'gemini', timeoutMs: 120_000 })
@@ -110,14 +130,35 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     const meta = run.operation_ids as unknown as AdMeta
     if (!meta?.product) throw new Error('Product details missing in pipeline_run')
 
+    // Dispatch: mascot-drama format runs an entirely different pipeline.
+    if (meta.ad_style === 'mascot') {
+      const { runMascotAdPipeline } = await import('./mascot-runner')
+      return runMascotAdPipeline(storyId)
+    }
+
     const product = meta.product
     const imageGcsUri = meta.imageGcsUri
+    const cutoutGcsUri = meta.cutoutGcsUri || null
     const credentialId = meta.credentialId
 
     // Resolve which Cloud Account to bill compute against
     const ctx = await loadGcpContext(credentialId)
     await log(`Cloud Account: ${ctx.projectId} (bucket: ${ctx.bucket})`)
-    await log(`Product: ${product.name} (${product.category})${imageGcsUri ? ' [with reference image]' : ''}`)
+    await log(`Product: ${product.name} (${product.category})${imageGcsUri ? ' [grounded on real image]' : ''}`)
+
+    // Download the real packshot once → pass inline to Gemini so concept + copy match
+    // the actual product (avoids the "invented bottle" problem). Non-fatal if missing.
+    let productImage: { data: string; mimeType: string } | undefined
+    if (imageGcsUri) {
+      try {
+        const imgBuf = await downloadGsUri(imageGcsUri)
+        const mimeType = imageGcsUri.endsWith('.jpg') || imageGcsUri.endsWith('.jpeg') ? 'image/jpeg'
+          : imageGcsUri.endsWith('.webp') ? 'image/webp' : 'image/png'
+        productImage = { data: imgBuf.toString('base64'), mimeType }
+      } catch (e) {
+        await log(`(image grounding unavailable: ${e instanceof Error ? e.message : e})`)
+      }
+    }
 
     // 2. Load AI Ad category prompts from DB
     const [cat] = await sql<{ prompt_topic_picker: string; prompt_script_writer: string }[]>`
@@ -125,37 +166,31 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     `
     if (!cat) throw new Error('ai_ad_talking_product category not found')
 
-    // 3. Topic picker — product details → ad concept
+    // 3. Topic picker — product (+ image) → human-centric ad concept
     await pipelineDb.setStep(storyId, 'topic')
     await log(`Generating concept...`)
     const concept = await callGemini(
       cat.prompt_topic_picker,
-      `Product details:\n${JSON.stringify(product, null, 2)}\n\nReturn JSON only.`,
-      ctx, 0.95,
+      `Product details:\n${JSON.stringify(product, null, 2)}\n\nThe attached image is the REAL product — ground all copy in it. Return JSON only.`,
+      ctx, 0.95, productImage,
     )
     await log(`Tagline: ${concept.tagline_hindi}`)
     await log(`Voice: ${(concept.voice_personality as string)?.slice(0, 80)}`)
 
-    // 4. Script writer
+    // 4. Script writer — product-free Veo b-roll + per-scene overlay spec + end-card
     await pipelineDb.setStep(storyId, 'script')
     await log(`Generating script...`)
-    // Concept fields could be either format (back-compat with old monologue runs):
-    const productVisual = (concept.product_visual_description_en as string) || (concept.product_anchor_en as string) || ''
-    const adversaryViz = (concept.adversary_visualization_en as string) || ''
-    const heroMoment = (concept.hero_moment_description_en as string) || ''
-
     const script = await callGemini(
       cat.prompt_script_writer,
       `Ad concept input:\n${JSON.stringify({
         product_name: product.name, category: product.category, benefits: product.benefits,
         target_audience: product.target_audience, tone: product.tone, duration_sec: product.duration_sec,
-        product_visual_description_en: productVisual,
-        adversary_visualization_en: adversaryViz,
-        hero_moment_description_en: heroMoment,
-        tagline_hindi: concept.tagline_hindi,
+        price: product.price,
+        ad_concept: concept.ad_concept, persona: concept.persona, emotional_arc: concept.emotional_arc,
+        tagline_hindi: concept.tagline_hindi, headline_hi: concept.headline_hi, cta_hi: concept.cta_hi,
         voice_personality: concept.voice_personality, scenes_count: concept.scenes_count,
-      }, null, 2)}\n\nEach video_prompt for scenes 2-4 MUST include product_visual_description_en VERBATIM. Scene 1 does NOT include the product. Last scene's tts_text MUST include tagline_hindi verbatim. Return JSON.`,
-      ctx, 0.85,
+      }, null, 2)}\n\nEvery video_prompt is product-free b-roll (NO product, NO packaging, NO text, NO logos). Mark which scenes composite the product via overlay.product. Last scene's tts_text MUST include tagline_hindi verbatim. Return JSON.`,
+      ctx, 0.85, productImage,
     ) as unknown as AdScript
 
     await log(`Script: "${script.ad_title_hindi}" (${script.scenes.length} scenes)`)
@@ -173,11 +208,11 @@ export async function runAdPipeline(storyId: string): Promise<void> {
       await log(`Audio uploaded`)
     }
 
-    // 6. Veo clips — semaphore 2 concurrent, with optional image conditioning
+    // 6. Veo clips — product-free b-roll, semaphore 2 concurrent
     await pipelineDb.setStep(storyId, 'veo_submit')
-    await log(`Generating ${script.scenes.length} clips${imageGcsUri ? ' (image-conditioned)' : ''}...`)
+    await log(`Generating ${script.scenes.length} b-roll clips (product composited in post)...`)
 
-    // Insert scene_jobs rows
+    // Insert scene_jobs rows (no product anchor — product is overlaid later)
     for (const scene of script.scenes) {
       const sn = String(scene.scene_num).padStart(2, '0')
       await sceneJobsDb.create({
@@ -186,7 +221,7 @@ export async function runAdPipeline(storyId: string): Promise<void> {
         beat: scene.beat,
         video_prompt: scene.video_prompt,
         tts_text: scene.tts_text,
-        primary_anchor: script.product_visual_description_en || script.product_anchor_en || productVisual || '',
+        primary_anchor: '',
         secondary_anchor: '',
         attempt: 1,
       })
@@ -212,15 +247,10 @@ export async function runAdPipeline(storyId: string): Promise<void> {
           release(); return { sn, ok: true }
         }
         await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
+        // No image conditioning — b-roll must NOT contain the product (composited later).
         const opId = await submitVeoClip(scene.video_prompt, ctx, AD_VEO_MODEL,
-          imageGcsUri ? {
-            gcsUri: imageGcsUri,
-            mimeType:
-              imageGcsUri.endsWith('.jpg') || imageGcsUri.endsWith('.jpeg') ? 'image/jpeg' :
-              imageGcsUri.endsWith('.webp') ? 'image/webp' :
-              'image/png',
-          } : undefined,
-          true,  // generateAudio: ON for narrative ads (action SFX + ambient mixed with Hindi TTS later)
+          undefined,
+          true,  // generateAudio: ambient/SFX, mixed low under Hindi TTS in compositor
         )
         // Poll
         let base64: string | undefined
@@ -253,7 +283,21 @@ export async function runAdPipeline(storyId: string): Promise<void> {
       }
     }))
 
-    const done = results.filter(r => r.status === 'fulfilled' && r.value.ok).length
+    // Map results back to scenes (allSettled preserves input order) → ordered successes.
+    const successfulScenes: ComposeScene[] = []
+    script.scenes.forEach((scene, i) => {
+      const r = results[i]
+      if (r.status === 'fulfilled' && r.value.ok) {
+        const ov = scene.overlay || {}
+        successfulScenes.push({
+          sceneNum: String(scene.scene_num).padStart(2, '0'),
+          showProduct: ov.product ?? false,
+          productMotion: ov.product_motion ?? 'center',
+          captionHi: ov.caption_hi,
+        })
+      }
+    })
+    const done = successfulScenes.length
     const failed = results.length - done
 
     await storiesDb.update(storyId, {
@@ -262,22 +306,28 @@ export async function runAdPipeline(storyId: string): Promise<void> {
       scenes_count: done,
       notes: failed > 0 ? `${failed} scene(s) failed` : '',
     })
-    await log(`Veo: ${done}/${script.scenes.length} clips done`)
+    await log(`Veo: ${done}/${script.scenes.length} b-roll clips done`)
 
-    // ── Step 7: ffmpeg merge clips + audio → final.mp4 ─────────────────────
+    // ── Step 7: composite real product + text overlays + end-card → final.mp4 ──
     if (done > 0) {
       try {
-        await log(`Merging ${done} clips with audio via ffmpeg...`)
-        const finalUrl = await mergeClipsWithAudio({
+        await log(`Compositing product + overlays via ffmpeg...`)
+        const finalUrl = await composeAd({
           storyId,
-          sceneCount: done,
+          scenes: successfulScenes,
+          endcard: {
+            headlineHi: script.headline_hi || (concept.headline_hi as string) || script.tagline_hindi,
+            priceText: script.price_text || (product.price ? `₹${product.price}` : undefined),
+            ctaHi: script.cta_hi || (concept.cta_hi as string) || 'अभी ऑर्डर करें',
+          },
+          productCutoutGcsUri: cutoutGcsUri || imageGcsUri,  // prefer transparent cutout
           ctx,
         })
         await sql`UPDATE stories SET final_url = ${finalUrl}, status = 'post_produced' WHERE story_id = ${storyId}`
-        await log(`✓ Final reel ready: ${finalUrl}`)
+        await log(`✓ Final ad ready: ${finalUrl}`)
       } catch (mergeErr) {
         const msg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr)
-        await log(`Merge failed (clips + audio still available separately): ${msg}`)
+        await log(`Composite failed (clips + audio still available separately): ${msg}`)
       }
     }
 

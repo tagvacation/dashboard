@@ -31,3 +31,16 @@ export async function fileExists(filePath: string) {
   const [exists] = await bucket.file(filePath).exists()
   return exists
 }
+
+/**
+ * Download any gs://bucket/path object using the default (env) credentials.
+ * Used for ad reference images/cutouts, which always live in the default upload
+ * bucket even when the generation pipeline runs under a different cloud account.
+ */
+export async function downloadGsUri(gsUri: string): Promise<Buffer> {
+  const m = gsUri.match(/^gs:\/\/([^/]+)\/(.+)$/)
+  if (!m) throw new Error(`Not a gs:// URI: ${gsUri}`)
+  const [, b, p] = m
+  const [buf] = await storage.bucket(b).file(p).download()
+  return buf
+}

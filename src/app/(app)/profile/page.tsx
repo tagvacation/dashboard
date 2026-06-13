@@ -60,6 +60,7 @@ export default function ProfilePage() {
               )}
             </div>
             <p className="text-sm text-white/60 mt-1">{user.email}</p>
+            {user.phone && <p className="text-sm text-white/60 mt-0.5">{user.phone}</p>}
             <p className="text-xs text-white/30 mt-3 font-mono">user_id: {user.id.slice(0, 8)}...</p>
           </div>
         </div>

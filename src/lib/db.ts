@@ -170,6 +170,38 @@ async function createTablesInner() {
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS gcp_credential_id TEXT DEFAULT ''`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS youtube_link TEXT DEFAULT ''`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS final_url TEXT DEFAULT ''`
+
+  // Users — email + phone, plan/role. (Also created by migrate-to-multi-tenant; idempotent here.)
+  await sql`
+    CREATE TABLE IF NOT EXISTS users (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      email TEXT UNIQUE NOT NULL,
+      name TEXT,
+      phone TEXT,
+      image_url TEXT,
+      plan TEXT DEFAULT 'free',
+      role TEXT DEFAULT 'user',
+      is_active BOOLEAN DEFAULT true,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      last_login_at TIMESTAMPTZ
+    )
+  `
+  await sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT`
+
+  // Email OTP codes — one in-flight code per email (PK on email = upsert replaces).
+  // name/phone carried here so signup details are applied only after the code verifies.
+  await sql`
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      email TEXT PRIMARY KEY,
+      code_hash TEXT NOT NULL,
+      mode TEXT NOT NULL DEFAULT 'login',   -- login | signup
+      name TEXT,
+      phone TEXT,
+      attempts INTEGER DEFAULT 0,
+      expires_at TIMESTAMPTZ NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
 }
 
 async function createTables(): Promise<void> {

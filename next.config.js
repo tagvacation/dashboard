@@ -14,7 +14,7 @@ const nextConfig = {
       },
     ],
   },
-  serverExternalPackages: ['fluent-ffmpeg', '@google-cloud/storage', 'postgres'],
+  serverExternalPackages: ['fluent-ffmpeg', '@google-cloud/storage', 'postgres', '@imgly/background-removal-node', '@napi-rs/canvas'],
 }
 
 module.exports = nextConfig

@@ -21,13 +21,16 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, target_audience, tone, duration_sec, imageGcsUri, credentialId } = body
+  const { name, category, price, benefits, target_audience, tone, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
+  const adStyle = body.ad_style === 'mascot' ? 'mascot' : 'emotional'
   if (!name || !category || !benefits?.length || !target_audience) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
   }
 
   // Generate story_id
-  const slug = String(name).toLowerCase().replace(/\s+/g, '_').slice(0, 25)
+  // URL-safe slug: collapse any non-alphanumeric run (spaces, %, etc.) to '_'.
+  // A stray '%' here breaks /library/[id] routing (malformed percent-escape → 400).
+  const slug = String(name).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 25)
   const today = new Date().toISOString().split('T')[0].replace(/-/g, '_')
   const rand = Math.floor(Math.random() * 1000).toString().padStart(3, '0')
   const storyId = `ad_${today}_${slug}_${rand}`
@@ -45,6 +48,8 @@ export async function POST(req: NextRequest) {
     const meta = {
       product: { name, category, price, benefits, target_audience, tone, duration_sec },
       imageGcsUri: imageGcsUri || null,
+      cutoutGcsUri: cutoutGcsUri || null,
+      ad_style: adStyle,
       credentialId: credentialId || null,
     }
     await sql`

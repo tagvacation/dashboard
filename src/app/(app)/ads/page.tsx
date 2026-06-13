@@ -35,6 +35,7 @@ export default function CreateAdPage() {
   const [imagePreview, setImagePreview] = useState('')
   const [creds, setCreds] = useState<CloudCred[]>([])
   const [credentialId, setCredentialId] = useState<string>('default')
+  const [adStyle, setAdStyle] = useState<'mascot' | 'emotional'>('mascot')
 
   useEffect(() => {
     fetch('/api/credentials').then(r => r.json()).then(d => {
@@ -69,6 +70,7 @@ export default function CreateAdPage() {
 
     try {
       let imageGcsUri: string | undefined
+      let cutoutGcsUri: string | undefined
       if (imageFile) {
         const formData = new FormData()
         formData.append('image', imageFile)
@@ -77,7 +79,9 @@ export default function CreateAdPage() {
           const err = await upRes.json().catch(() => ({ error: 'Image upload failed' }))
           throw new Error(err.error || 'Image upload failed')
         }
-        imageGcsUri = (await upRes.json()).gcsUri
+        const up = await upRes.json()
+        imageGcsUri = up.gcsUri
+        cutoutGcsUri = up.cutoutGcsUri || undefined
       }
 
       const res = await fetch('/api/ads/generate', {
@@ -89,7 +93,9 @@ export default function CreateAdPage() {
           benefits: benefits.filter(b => b.trim()),
           target_audience: audience.trim(),
           tone, duration_sec: duration,
+          ad_style: adStyle,
           imageGcsUri,
+          cutoutGcsUri,
           credentialId: credentialId === 'default' ? null : credentialId,
         }),
       })
@@ -115,6 +121,23 @@ export default function CreateAdPage() {
       </div>
 
       <div className="space-y-5">
+        {/* 0. Ad style */}
+        <FormCard step="00" title="Ad style" subtitle="Pick the creative format">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {([
+              { v: 'mascot', emoji: '🦸', title: 'Mascot drama', desc: 'Your product becomes a hero character that fights the problem (talking, animated story).' },
+              { v: 'emotional', emoji: '✨', title: 'Emotional / lifestyle', desc: 'Real product reveal over human, emotional b-roll with a clean end-card.' },
+            ] as const).map(opt => (
+              <button key={opt.v} type="button" onClick={() => setAdStyle(opt.v)}
+                className={`text-left p-4 rounded-xl border transition-all ${adStyle === opt.v ? 'border-purple-400 bg-purple-500/10 ring-2 ring-purple-500/20' : 'border-white/10 bg-black/40 hover:border-white/20'}`}>
+                <div className="text-lg mb-1">{opt.emoji}</div>
+                <div className="text-sm font-semibold">{opt.title}</div>
+                <div className="text-xs text-white/40 mt-0.5">{opt.desc}</div>
+              </button>
+            ))}
+          </div>
+        </FormCard>
+
         {/* 1. Product details */}
         <FormCard step="01" title="Product details" subtitle="What are you advertising?">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

@@ -1,6 +1,7 @@
 import { NextAuthOptions } from 'next-auth'
-import GoogleProvider from 'next-auth/providers/google'
+import CredentialsProvider from 'next-auth/providers/credentials'
 import { sql } from './db'
+import { hashCode } from './otp'
 
 declare module 'next-auth' {
   interface Session {
@@ -8,6 +9,7 @@ declare module 'next-auth' {
       id: string
       email: string
       name?: string | null
+      phone?: string | null
       image?: string | null
       role: 'admin' | 'user'
       plan: 'free' | 'hobby' | 'pro' | 'agency'
@@ -18,62 +20,92 @@ declare module 'next-auth' {
 declare module 'next-auth/jwt' {
   interface JWT {
     userId: string
+    phone?: string | null
     role: 'admin' | 'user'
     plan: 'free' | 'hobby' | 'pro' | 'agency'
   }
 }
 
 const ADMIN_EMAIL = 'rajaman.ar3@gmail.com'
+const MAX_OTP_ATTEMPTS = 5
 
 export const authOptions: NextAuthOptions = {
   providers: [
-    GoogleProvider({
-      clientId: process.env.AUTH_GOOGLE_CLIENT_ID || process.env.YOUTUBE_CLIENT_ID || '',
-      clientSecret: process.env.AUTH_GOOGLE_CLIENT_SECRET || process.env.YOUTUBE_CLIENT_SECRET || '',
-      authorization: {
-        params: {
-          prompt: 'consent',
-          access_type: 'offline',
-          response_type: 'code',
-          scope: 'openid email profile',
-        },
+    CredentialsProvider({
+      name: 'Email OTP',
+      credentials: {
+        email: { label: 'Email', type: 'email' },
+        code: { label: 'Code', type: 'text' },
+      },
+      async authorize(credentials) {
+        const email = String(credentials?.email || '').trim().toLowerCase()
+        const code = String(credentials?.code || '').trim()
+        if (!email || !/^\d{6}$/.test(code)) return null
+
+        const [otp] = await sql<{
+          mode: string; code_hash: string; name: string | null; phone: string | null
+          attempts: number; expires_at: string
+        }[]>`SELECT mode, code_hash, name, phone, attempts, expires_at FROM otp_codes WHERE email = ${email}`
+
+        if (!otp) return null
+        if (new Date(otp.expires_at).getTime() < Date.now()) {
+          await sql`DELETE FROM otp_codes WHERE email = ${email}`
+          return null
+        }
+        if (otp.attempts >= MAX_OTP_ATTEMPTS) {
+          await sql`DELETE FROM otp_codes WHERE email = ${email}`
+          return null
+        }
+        if (otp.code_hash !== hashCode(email, code)) {
+          await sql`UPDATE otp_codes SET attempts = attempts + 1 WHERE email = ${email}`
+          return null
+        }
+
+        // Code verified — consume it and upsert the user.
+        await sql`DELETE FROM otp_codes WHERE email = ${email}`
+        const role = email === ADMIN_EMAIL ? 'admin' : 'user'
+        const [dbUser] = await sql<{
+          id: string; email: string; name: string | null; phone: string | null
+          role: 'admin' | 'user'; plan: 'free' | 'hobby' | 'pro' | 'agency'
+        }[]>`
+          INSERT INTO users (email, name, phone, role, last_login_at)
+          VALUES (${email}, ${otp.name}, ${otp.phone}, ${role}, NOW())
+          ON CONFLICT (email) DO UPDATE SET
+            name = COALESCE(users.name, EXCLUDED.name),
+            phone = COALESCE(users.phone, EXCLUDED.phone),
+            last_login_at = NOW()
+          RETURNING id, email, name, phone, role, plan
+        `
+
+        return {
+          id: dbUser.id,
+          email: dbUser.email,
+          name: dbUser.name,
+          phone: dbUser.phone,
+          role: dbUser.role,
+          plan: dbUser.plan,
+        }
       },
     }),
   ],
   session: { strategy: 'jwt' },
   pages: { signIn: '/login' },
   callbacks: {
-    async signIn({ user }) {
-      if (!user.email) return false
-      // Upsert user in DB on first sign-in
-      const role = user.email === ADMIN_EMAIL ? 'admin' : 'user'
-      await sql`
-        INSERT INTO users (email, name, image_url, role, last_login_at)
-        VALUES (${user.email}, ${user.name ?? null}, ${user.image ?? null}, ${role}, NOW())
-        ON CONFLICT (email) DO UPDATE SET
-          name = COALESCE(EXCLUDED.name, users.name),
-          image_url = COALESCE(EXCLUDED.image_url, users.image_url),
-          last_login_at = NOW()
-      `
-      return true
-    },
     async jwt({ token, user }) {
-      // First sign-in: enrich token with DB user data
-      if (user?.email) {
-        const [dbUser] = await sql<{ id: string; role: 'admin' | 'user'; plan: 'free' | 'hobby' | 'pro' | 'agency' }[]>`
-          SELECT id, role, plan FROM users WHERE email = ${user.email}
-        `
-        if (dbUser) {
-          token.userId = dbUser.id
-          token.role = dbUser.role
-          token.plan = dbUser.plan
-        }
+      // First sign-in: the authorize() return value is available as `user`.
+      const u = user as (typeof user & { id?: string; phone?: string | null; role?: 'admin' | 'user'; plan?: 'free' | 'hobby' | 'pro' | 'agency' }) | undefined
+      if (u?.id) {
+        token.userId = u.id
+        token.phone = u.phone ?? null
+        token.role = u.role ?? 'user'
+        token.plan = u.plan ?? 'free'
       }
       return token
     },
     async session({ session, token }) {
       if (token.userId) {
         session.user.id = token.userId
+        session.user.phone = token.phone ?? null
         session.user.role = token.role
         session.user.plan = token.plan
       }

@@ -48,9 +48,28 @@ export async function POST(req: NextRequest) {
 
     await bucket.file(path).save(buf, { contentType: mimeType, resumable: false })
 
+    // Background-removed transparent cutout for the hybrid ad compositor.
+    // Non-fatal: if removal fails, the pipeline still runs (just without product overlay).
+    let cutoutGcsUri: string | null = null
+    let cutoutPublicUrl: string | null = null
+    try {
+      const { removeBackground } = await import('@imgly/background-removal-node')
+      // Wrap in a typed Blob — the lib can't sniff the mime from a raw Buffer.
+      const blob = await removeBackground(new Blob([new Uint8Array(buf)], { type: mimeType }))
+      const cutoutBuf = Buffer.from(await blob.arrayBuffer())
+      const cutoutPath = `users/${userId}/ad-refs/${hash}_cutout.png`
+      await bucket.file(cutoutPath).save(cutoutBuf, { contentType: 'image/png', resumable: false })
+      cutoutGcsUri = `gs://${bucketName}/${cutoutPath}`
+      cutoutPublicUrl = `https://storage.googleapis.com/${bucketName}/${cutoutPath}`
+    } catch (bgErr) {
+      console.error('Background removal failed (continuing without cutout):', bgErr)
+    }
+
     return NextResponse.json({
       gcsUri: `gs://${bucketName}/${path}`,
       publicUrl: `https://storage.googleapis.com/${bucketName}/${path}`,
+      cutoutGcsUri,
+      cutoutPublicUrl,
     })
   } catch (e) {
     console.error('Image upload error:', e)
