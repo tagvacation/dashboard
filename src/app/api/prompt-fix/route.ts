@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { defaultContext, getAccessToken } from '@/lib/pipeline/auth'
 
 export const dynamic = 'force-dynamic'
 
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`
+const GEMINI_MODEL = 'gemini-2.5-flash'
+
+function geminiUrl(): string {
+  const ctx = defaultContext()
+  return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
+}
 
 export async function POST(req: NextRequest) {
   const { prompt, primary_anchor, secondary_anchor, has_secondary, issue } = await req.json()
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })
-
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) return NextResponse.json({ error: 'GEMINI_API_KEY not set' }, { status: 500 })
 
   // ── Extract action part (strip anchors + style from both ends) ─────────────
   let action = String(prompt)
@@ -58,16 +61,30 @@ ${action || '(empty — create a peaceful scene-appropriate action based on cont
 
 Make it pass Veo content filters while keeping the scene visually meaningful.`
 
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+  const ctx = defaultContext()
+
   try {
-    const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents: [{ role: 'user', parts: [{ text: user }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 200 },
-      }),
+    const fetchBody = JSON.stringify({
+      system_instruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+      generationConfig: { temperature: 0.3, maxOutputTokens: 200 },
     })
+    const doFetch = async () => {
+      const token = await getAccessToken(ctx)
+      return fetch(geminiUrl(), {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: fetchBody,
+      })
+    }
+    let res = await doFetch()
+    for (let attempt = 1; attempt < 4 && res.status === 429; attempt++) {
+      const retryAfterSec = parseInt(res.headers.get('Retry-After') || '0')
+      const waitMs = retryAfterSec > 0 ? retryAfterSec * 1000 : Math.pow(2, attempt) * 5_000
+      await sleep(waitMs)
+      res = await doFetch()
+    }
     if (!res.ok) throw new Error(`Gemini error ${res.status}`)
     const data = await res.json()
     const fixedAction = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()

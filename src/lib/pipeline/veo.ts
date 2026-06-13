@@ -1,6 +1,7 @@
 import { getAccessToken, GCP_REGION } from './auth'
 import type { GcpContext } from './auth'
 import type { Scene } from './types'
+import { fetchWithRetry } from './fetch-retry'
 
 const VEO_MODEL = 'veo-3.1-lite-generate-001'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -9,47 +10,54 @@ function veoBase(ctx: GcpContext) {
   return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${VEO_MODEL}`
 }
 
-export async function submitVeoClip(prompt: string, ctx: GcpContext, model?: string): Promise<string> {
+/** Optional reference image for image-to-video conditioning. */
+export interface VeoImageRef {
+  gcsUri?: string                // gs://bucket/path.png
+  bytesBase64Encoded?: string    // alternative to gcsUri
+  mimeType?: string              // image/png or image/jpeg
+}
+
+export async function submitVeoClip(
+  prompt: string,
+  ctx: GcpContext,
+  model?: string,
+  imageRef?: VeoImageRef,
+  generateAudio: boolean = false,
+): Promise<string> {
   const veoModel = model || VEO_MODEL
   const base = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${veoModel}`
 
-  // Retry up to 3 times on 429 with backoff
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) {
-      const waitMs = attempt * 30_000 // 30s, 60s backoff
-      console.log(`Veo 429 backoff: waiting ${waitMs / 1000}s before retry ${attempt + 1}`)
-      await sleep(waitMs)
+  // Build instance — add image if provided (image-to-video mode)
+  const instance: Record<string, unknown> = { prompt }
+  if (imageRef && (imageRef.gcsUri || imageRef.bytesBase64Encoded)) {
+    instance.image = {
+      ...(imageRef.gcsUri ? { gcsUri: imageRef.gcsUri } : {}),
+      ...(imageRef.bytesBase64Encoded ? { bytesBase64Encoded: imageRef.bytesBase64Encoded } : {}),
+      mimeType: imageRef.mimeType || 'image/png',
     }
-
-    const token = await getAccessToken(ctx)
-    const res = await fetch(`${base}:predictLongRunning`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        instances: [{ prompt }],
-        parameters: {
-          aspectRatio: '9:16',
-          sampleCount: 1,
-          durationSeconds: 8,
-          resolution: '1080p',
-          personGeneration: 'allow_all',
-          generateAudio: false,
-        },
-      }),
-    })
-
-    if (res.status === 429) {
-      if (attempt === 2) throw new Error(`Veo submit error 429: quota exceeded after retries`)
-      continue
-    }
-
-    if (!res.ok) throw new Error(`Veo submit error ${res.status}: ${await res.text()}`)
-    const data = await res.json()
-    if (!data.name) throw new Error('Veo submit returned no operation name')
-    return data.name as string
   }
 
-  throw new Error('Veo submit failed after retries')
+  const token = await getAccessToken(ctx)
+  const res = await fetchWithRetry(`${base}:predictLongRunning`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      instances: [instance],
+      parameters: {
+        aspectRatio: '9:16',
+        sampleCount: 1,
+        durationSeconds: 8,
+        resolution: '1080p',
+        personGeneration: 'allow_all',
+        generateAudio,
+      },
+    }),
+  }, { label: 'veo-submit', timeoutMs: 90_000, backoffMs: 30_000 })
+
+  if (!res.ok) throw new Error(`Veo submit error ${res.status}: ${await res.text()}`)
+  const data = await res.json()
+  if (!data.name) throw new Error('Veo submit returned no operation name')
+  return data.name as string
 }
 
 interface PollResult {
@@ -60,14 +68,38 @@ interface PollResult {
 }
 
 export async function pollVeoOperation(operationName: string, ctx: GcpContext): Promise<PollResult> {
-  const token = await getAccessToken(ctx)
-  const res = await fetch(`${veoBase(ctx)}:fetchPredictOperation`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ operationName }),
-  })
-  if (!res.ok) throw new Error(`Veo poll error ${res.status}: ${await res.text()}`)
-  const data = await res.json()
+  // Wrap the fetch in retry for transient errors (undici "terminated", reset, etc.)
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const token = await getAccessToken(ctx)
+      const res = await fetch(`${veoBase(ctx)}:fetchPredictOperation`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operationName }),
+        signal: AbortSignal.timeout(60_000),  // 60s per-attempt timeout
+      })
+      if (!res.ok) throw new Error(`Veo poll error ${res.status}: ${await res.text()}`)
+      return await processPollResponse(await res.json())
+    } catch (e: unknown) {
+      lastErr = e
+      const msg = e instanceof Error ? e.message : String(e)
+      // Transient: terminated, fetch failed, network errors, abort
+      const isTransient =
+        msg.includes('terminated') ||
+        msg.includes('fetch failed') ||
+        msg.includes('ECONNRESET') ||
+        msg.includes('ETIMEDOUT') ||
+        msg.includes('aborted')
+      if (!isTransient || attempt === 3) throw e
+      console.warn(`Veo poll attempt ${attempt} transient error: ${msg.slice(0, 100)}. Retrying in ${attempt * 5}s...`)
+      await sleep(attempt * 5000)
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+}
+
+async function processPollResponse(data: { done?: boolean; error?: { message?: string }; response?: { videos?: { bytesBase64Encoded?: string }[] } }): Promise<PollResult> {
 
   if (!data.done) return { done: false, filtered: false }
   if (data.error) return { done: true, filtered: true, error: data.error?.message || 'Content filtered' }

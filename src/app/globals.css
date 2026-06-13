@@ -3,8 +3,54 @@
 @tailwind utilities;
 
 html, body {
-  height: 100%;
-  overflow: hidden;
   margin: 0;
   padding: 0;
+  background: #0a0a0f;       /* dark base so scrollbar gutter doesn't show white */
+  color: rgb(255 255 255 / 0.9);
+}
+
+/* Lenis smooth-scroll lib needs this for sticky positioning to keep working */
+html.lenis, html.lenis body {
+  height: auto;
+}
+.lenis.lenis-smooth {
+  scroll-behavior: auto !important;
+}
+.lenis.lenis-smooth [data-lenis-prevent] {
+  overscroll-behavior: contain;
+}
+.lenis.lenis-stopped {
+  overflow: clip;
+}
+
+/* ─── Custom scrollbar (Chrome/Safari/Edge) ──────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: #0a0a0f;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0f;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 5px;
+  border: 2px solid #0a0a0f;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+::-webkit-scrollbar-corner {
+  background: #0a0a0f;
+}
+
+/* ─── Firefox ──────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) #0a0a0f;
+}
+
+/* iOS momentum scroll */
+* {
+  -webkit-overflow-scrolling: touch;
 }

@@ -1,23 +1,43 @@
 import { settingsDb } from '../db'
+import { defaultContext, getAccessToken } from './auth'
 import type { Script, Scene } from './types'
 
-// Direct Gemini API (not Vertex AI) — same as n8n's googlePalmApi
+// Vertex AI Gemini endpoint — uses service account auth (not API key)
+// Same request/response format as Gemini Developer API; no quota issues with credits
 const GEMINI_MODEL = 'gemini-2.5-flash'
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`
+
+function geminiUrl(): string {
+  const ctx = defaultContext()
+  return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 async function callGemini(systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('GEMINI_API_KEY not set in environment variables')
-
-  const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemPrompt }] },
-      contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-      generationConfig: { temperature, maxOutputTokens: 65536, responseMimeType: 'application/json' },
-    }),
+  const ctx = defaultContext()
+  const body = JSON.stringify({
+    system_instruction: { parts: [{ text: systemPrompt }] },
+    contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+    generationConfig: { temperature, maxOutputTokens: 65536, responseMimeType: 'application/json' },
   })
+
+  const doFetch = async () => {
+    const token = await getAccessToken(ctx)
+    return fetch(geminiUrl(), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body,
+    })
+  }
+
+  let res: Response = await doFetch()
+  for (let attempt = 1; attempt < 4 && res.status === 429; attempt++) {
+    const retryAfterSec = parseInt(res.headers.get('Retry-After') || '0')
+    const waitMs = retryAfterSec > 0 ? retryAfterSec * 1000 : Math.pow(2, attempt) * 5_000
+    console.warn(`Gemini 429 — waiting ${waitMs / 1000}s before retry ${attempt}`)
+    await sleep(waitMs)
+    res = await doFetch()
+  }
   if (!res.ok) throw new Error(`Gemini error ${res.status}: ${await res.text()}`)
   const data = await res.json()
 
@@ -37,6 +57,66 @@ async function callGemini(systemPrompt: string, userPrompt: string, temperature 
 
 const STYLE_SUFFIX = 'Pixar-inspired stylized 3D animation, warm soft lighting, expressive character faces, vibrant colors, smooth animation quality, Indian period village setting. No character voices or dialogue audio — ambient environmental sounds only (wind, birds, rain, market crowd, temple bells, nature sounds matching the scene). Vertical 9:16, no text or captions in frame, no logos or brand marks.'
 
+// Shared safety block — verified against real Veo content-filter rejections
+// (2026-06-06: Veo Lite tightened around female-coded characters, distress verbs, physical touch)
+export const SAFETY_CORE = `VEO CONTENT SAFETY — CRITICAL (verified 2026-06-06 against real rejections):
+
+NEVER use in video_prompt:
+- Physical actions: hit, beat, strike, attack, punch, slap, kick, push, throw at, grab, drag, restraining, fight, raised fist
+- Injury/pain: blood, wound, hurt, bleeding, injured, bruise, gash, collapsed, writhing
+- Death: dead, dying, corpse, perished, lifeless, burial, funeral
+- Distress verbs: sobbing, weeping, wailing, screaming, hysterical, panicking, in agony, crying uncontrollably
+- Physical touch between characters: "places hand on shoulder", "embraces", "hugs", "touches arm", "holds hand"
+- Female-coded + innocence pattern: avoid combining "delicate" + "innocent" + "young" + "sparkling eyes" + traditional dress in one anchor — triggers child-safety filter even for non-human characters
+- Weapons: knife, sword, gun, blade, dagger, arrow
+- Crowds: angry mob, riot, rampaging, fleeing in panic
+
+SAFE ALTERNATIVES — show emotion through expression + body language:
+- Sadness: "head bowed, single tear glistening on cheek, gazing at the ground"
+- Grief: "sits quietly under a tree, hands resting in lap, expression heavy, looking at distant horizon"
+- Pining: "stands by a window in a sunlit courtyard, gazing toward distant fields, wistful half-smile"
+- Anger: "face tightened, jaw set, eyes narrowed, fists at sides — no swinging motion"
+- Confrontation: "two characters facing each other at distance across a market stall, long tense silence, arms crossed"
+- Humiliation: "stands facing the other with head bowed low, hands clasped in front, while other watches with hard expression"
+- Wise counsel: "the elder gestures toward the horizon with one hand, younger listens with hands folded — characters remain at arm's length, NO touch"
+- Mentoring (NO touch): "elder stands next to younger, both looking out at the field together, elder gesturing toward the way forward"
+- Gloating/wealth: "stands tall surveying a room piled with gold coins on velvet, satisfied half-smile, hands behind back"
+- Poverty: "patched simple clothes, single oil lamp, mud-walled hut, dignified posture, modest meal of rice in clay bowl"
+- Reunion: "two characters approach each other across courtyard, stop face-to-face at conversational distance, both with warm expressions — NO embrace"
+- Family discord: "characters at opposite ends of room, both turned away from each other, evening light"
+- Shock: "steps back slightly, eyes wide, mouth slightly open in disbelief"
+- Dismissal: "waves hand away slowly, turns back, walks away"
+
+OBSERVED TRANSIENT BUG: Sometimes Veo returns "No video in response" with no explicit filter message — that's NOT a content issue, just a transient model glitch. The same prompt resubmitted often works on retry.`
+
+// Shared craft block — proven across KathaKar (Blacksmith 12K views) + Veggie Drama
+export const CRAFT_CORE = `TITLE FORMULA (proven viral patterns):
+
+Pattern A — A vs B contrast (KathaKar Blacksmith hit: "लोहार की कील बनाम सुनार का मुकुट" — 2,574 views):
+  "[Low-status object/character] बनाम [High-status object/character] (English subtitle)"
+
+Pattern B — Cliffhanger hook (Ai pixeltales hit: "पत्नी ने धोखा दिया, लेकिन पति बन गया करोड़पति" — 5M views):
+  "[Setup with emoji] [Hindi action verb] [target]... [लेकिन/फिर जो हुआ tease] [emoji] | [category tag]"
+
+Rules:
+- 60-95 chars total (mobile-friendly preview)
+- 2-3 emojis MAX (💔😱🔥🥲👀 — not spammy)
+- Hindi Devanagari is the lead; English in parens optional
+- Avoid pasting the full topic description as title — distill to the contrast/hook
+
+CHARACTER ANCHOR RULES (CRITICAL — Veo generates each scene independently):
+- 35-60 word English description per recurring character
+- Include: body shape/color, eye style, distinctive feature (moustache/glasses/headwear), clothing (SPECIFIC items + colors), posture/expression baseline
+- Used VERBATIM at the START of every scene featuring that character — never paraphrase, never abbreviate
+- For multi-character scenes: stack anchors with "Wide two-shot framing." between them
+- For 3+ characters: stack with "Wide group framing." filler
+
+SCENE 1 (HOOK) RULE:
+- First 3 seconds MUST show the conflict premise visually
+- Algorithm-critical: drop-off here is permanent
+- Show CHARACTERS IN THEIR NATURAL HABITAT before conflict, with SPECIFIC time-of-day atmosphere
+- Example: "watering crops at dawn, golden light through neem leaves" — not "morning light"`
+
 export const DEFAULT_PROMPTS = {
   topic_picker: `You are a creative director for a Hindi YouTube Shorts channel called KathaKar. Your job is to pick a compelling story topic for today's video.
 
@@ -45,15 +125,31 @@ NICHE DISTRIBUTION (follow strictly):
 - 15% spiritual/dharmic: sant ki seekh, devotion rewarded, dharma prevails
 - 5% family/emotional: father-son, mother sacrifice, generational wisdom
 
-TOPIC RULES:
-- Must be a story that fits in 60-90 seconds (8-10 scenes)
-- Must have a clear TWIST — unexpected reversal of fortune or revelation
-- Must end with a moral lesson (seekh)
-- Protagonist must be a human (king, poor man, merchant, farmer, sant, mother, son etc.)
-- No modern settings (no smartphones, cars, offices) — village/kingdom/nature settings preferred
-- Topic must feel fresh — not a generic cliché but a specific scenario
+PROVEN VIRAL PATTERN (KathaKar's "Blacksmith vs Goldsmith" hit, 2,574 views, 81% retention):
+- Clear A vs B contrast: humble craftsman/laborer vs arrogant noble/merchant
+- Concrete physical object contrast (NAIL vs CROWN, dry well vs flowing water, iron axe vs golden lock)
+- Karma reversal as the engine: low-status outshines high-status through earned merit
+- THIS specific structure outperforms abstract moral lessons. Default to it.
 
-Return ONLY a JSON object, no other text.`,
+TOPIC RULES:
+- Must fit in 60-90 seconds (8-10 scenes)
+- Must have a clear TWIST — unexpected reversal of fortune or revelation
+- Must end with a moral lesson (seekh) that feels EARNED by the events
+- Protagonist must be human (king, poor man, merchant, farmer, sant, mother, son etc.)
+- No modern settings (no smartphones, cars, offices) — village/kingdom/nature settings
+- Topic must be SPECIFIC and emotionally rich — not "a rich man was greedy" but "a merchant counted gold while a child cried from hunger outside his gate"
+
+TITLE HINT — output a title_draft following the A vs B contrast formula when applicable:
+- Examples: "लोहार की कील बनाम सुनार का मुकुट", "गरीब किसान की बैलगाड़ी बनाम सेठ की पालकी"
+- 60-90 chars, optional English subtitle in parens, 1-2 emojis MAX
+
+Return ONLY a JSON object:
+{
+  "topic": "1-2 sentence Hindi description",
+  "theme": "moral_karma|spiritual|family",
+  "title_draft": "Hindi title following A vs B formula",
+  "hook_idea": "what scene 1 shows in 3 seconds, in English"
+}`,
 
   script_writer: `You are a master Hindi storyteller who writes short-form moral stories for YouTube Reels.
 
@@ -119,29 +215,7 @@ SCENE 1 (HOOK) — CINEMATIC OPENING with character introduction:
 
 TTS TEXT: Hindi Devanagari, 12-18 words per scene (fits 6-9 seconds at natural storyteller pace). Punchy, emotional lines. Third-person narrator. No filler words. Each line should feel like a chapter opening.
 
-VEO CONTENT SAFETY RULES — CRITICAL (violating these wastes real money by triggering Veo content filter):
-
-NEVER use these words or actions in video_prompt:
-- Physical violence: hit, beat, strike, punch, slap, kick, push, attack, grab, drag, throw, assault
-- Injury or pain: wound, blood, bruise, hurt, injured, collapsed, writhing, in pain
-- Death or dying: dead, dying, died, corpse, burial, funeral, lifeless, perishes
-- Extreme distress: screaming, wailing, crying uncontrollably, in agony, panicking
-- Crowd danger: angry mob, panicking crowd, fleeing villagers, rampaging, rioting
-- Threats: raised fist, brandishing weapon, menacing approach, threatening gesture, sword raised to strike
-- Intense confrontation: grabbing collar, pushing down, forcing to kneel, restraining
-
-SAFE VISUAL ALTERNATIVES — use these instead:
-- Confrontation: "stands facing [character], arms crossed, expression hard and dismissive"
-- Anger: "face tightening with frustration, jaw clenched, eyes narrowed"
-- Defeat: "head bowed low, shoulders drooping, staring at the ground"
-- Humiliation: "kneels on the ground, hands clasped together, looking up quietly"
-- Grief: "sits alone under a tree, hands in lap, expression of deep sadness"
-- Shock/twist: "steps back slightly, eyes wide, mouth slightly open in disbelief"
-- Dismissal: "waves hand away slowly, turns back, walks away"
-- Punishment/consequence: "sits alone in a bare courtyard, empty hands, fading afternoon light"
-- Tense crowd: "villagers stand watching in silence, faces showing concern"
-- Character conflict: "two characters stand at distance facing each other, a long tense silence"
-- Sadness without crying: "eyes glistening, lower lip trembling slightly, looking into the distance"
+${SAFETY_CORE}
 
 KEY PRINCIPLE: Show EMOTION and BODY LANGUAGE, not physical action. Veo renders faces and expressions beautifully — use that strength.
 
@@ -149,19 +223,25 @@ FORBIDDEN (general):
 - Real brand names, specific living celebrities or politicians
 - Living religious leaders (generic sant/guru/sadhu is fine)
 - Smartphones, cars, modern offices (unless story is explicitly modern)
-- Any dialogue instruction in video_prompt (no 'says', 'shouts', 'whispers')`,
+- Any dialogue instruction in video_prompt (no 'says', 'shouts', 'whispers')
 
-  scene_rewrite: `You are rewriting a Veo video prompt for a Hindi moral story animation. The prompt was REJECTED by Veo's content filter.
+${CRAFT_CORE}
 
-STRICT RULES:
-1. Keep the character description at the START exactly word-for-word — do not change even one character
-2. Keep the style suffix at the END exactly unchanged
-3. Rewrite ONLY the action/scene in the middle
-4. Use the story context (narrator line + beat) to understand what should be visually shown
-5. MUST stay in Indian period setting (village/field/river/palace/kingdom) — NO rooms, kitchens, fantasy worlds, modern settings
-6. Show Indian human characters in traditional clothing — NOT robots, monsters, creatures, or animals
-7. The new action must be peaceful but story-relevant
-8. Return ONLY the complete rewritten prompt text. No conversational introductions, explanations, or markdown blocks.`,
+OUTPUT TITLE: include a "title_hindi" field following the title formula above. Distill the contrast/hook — do NOT paste the topic description as the title.`,
+
+  scene_rewrite: `You rewrite a REJECTED Veo animation action description. Veo's content filter blocked the original.
+
+Return ONLY 1-3 sentences describing a SAFE, PEACEFUL alternative ACTION. NO character descriptions. NO style words. NO animation instructions. Just what the character does and where.
+
+${SAFETY_CORE}
+
+REWRITE STRATEGY:
+- Identify which banned element triggered the filter (distress verb, physical touch, female-coded + innocence pattern, etc.)
+- Replace with the matching SAFE ALTERNATIVE from the list above
+- Keep the story beat intact — the scene's purpose should still land
+- Stay in Indian period setting (village/field/river/palace/kingdom) — NO modern settings, NO Western locations
+
+Output: 1-3 sentences. Just the action. No preamble like "Here's the rewrite" or markdown blocks.`,
 }
 
 // ─── Veo prompt builder — ALWAYS programmatically correct ────────────────────
@@ -369,8 +449,7 @@ Your output must be a SINGLE JSON object with these exact keys:
  * This guarantees character anchor and style NEVER change between attempts.
  */
 export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('GEMINI_API_KEY not set')
+  const ctx = defaultContext()
 
   // Extract the action-only part from original prompt
   // Format: [anchor] [action] [style_suffix]
@@ -408,15 +487,26 @@ ${actionPart}
 
 Rewrite: peaceful story-relevant alternative (1-2 sentences only). No character descriptions, no style words.`
 
-  const res = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      system_instruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: user }] }],
-      generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
-    }),
+  const rewriteBody = JSON.stringify({
+    system_instruction: { parts: [{ text: system }] },
+    contents: [{ role: 'user', parts: [{ text: user }] }],
+    generationConfig: { temperature: 0.3, maxOutputTokens: 150 },
   })
+  const doRewriteFetch = async () => {
+    const token = await getAccessToken(ctx)
+    return fetch(geminiUrl(), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: rewriteBody,
+    })
+  }
+  let res = await doRewriteFetch()
+  for (let attempt = 1; attempt < 4 && res.status === 429; attempt++) {
+    const retryAfterSec = parseInt(res.headers.get('Retry-After') || '0')
+    const waitMs = retryAfterSec > 0 ? retryAfterSec * 1000 : Math.pow(2, attempt) * 5_000
+    await sleep(waitMs)
+    res = await doRewriteFetch()
+  }
   if (!res.ok) throw new Error(`Gemini rewrite error ${res.status}`)
   const data = await res.json()
   const newAction = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim()

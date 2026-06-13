@@ -1,18 +1,30 @@
-import { NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
+import { getYouTubeClientForChannel } from '@/lib/youtube'
+import { channelsDb } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.YOUTUBE_CLIENT_ID,
-  process.env.YOUTUBE_CLIENT_SECRET,
-  process.env.YOUTUBE_REDIRECT_URI
-)
-oauth2Client.setCredentials({ refresh_token: process.env.YOUTUBE_REFRESH_TOKEN })
+export async function GET(req: NextRequest) {
+  const channelId = req.nextUrl.searchParams.get('channelId') || undefined
 
-export async function GET() {
-  // Guard: credentials must be configured
-  if (!process.env.YOUTUBE_REFRESH_TOKEN) {
+  // Resolve OAuth client — per channel if provided, else env default
+  let oauth2Client
+  try {
+    oauth2Client = await getYouTubeClientForChannel(channelId)
+  } catch (e) {
+    return NextResponse.json({ error: `Channel ${channelId} not configured for YouTube` }, { status: 400 })
+  }
+
+  // Verify channel exists if specified
+  if (channelId && channelId !== 'default') {
+    const ch = await channelsDb.getById(channelId)
+    if (!ch?.yt_refresh_token) {
+      return NextResponse.json({
+        error: `Channel ${channelId} has no YouTube credentials. Reconnect OAuth.`,
+      }, { status: 401 })
+    }
+  } else if (!process.env.YOUTUBE_REFRESH_TOKEN) {
     return NextResponse.json({ error: 'YouTube not connected. Click "Connect YT" to authorize.' }, { status: 401 })
   }
 

@@ -4,15 +4,35 @@ const sql = postgres(process.env.DATABASE_URL!, {
   ssl: { rejectUnauthorized: false },
   max: 10,
   idle_timeout: 20,
-  connect_timeout: 10,
+  connect_timeout: 30,  // Railway free-tier cold start can take 15-25s
+  max_lifetime: 60 * 30, // 30 min — recycle stale connections
   onnotice: () => {}, // Suppress PostgreSQL NOTICE messages (e.g. "table already exists")
 })
+
+// Retry helper for transient connect errors (Railway proxy cold starts)
+async function withRetry<T>(fn: () => Promise<T>, label: string, maxAttempts = 3): Promise<T> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn()
+    } catch (e: unknown) {
+      lastErr = e
+      const code = (e as { code?: string })?.code
+      const isTransient = code === 'CONNECT_TIMEOUT' || code === 'ECONNRESET' || code === 'ETIMEDOUT' || code === 'ENOTFOUND'
+      if (!isTransient || attempt === maxAttempts) break
+      const wait = attempt * 2000  // 2s, 4s, 6s backoff
+      console.warn(`DB ${label} attempt ${attempt} failed (${code}). Retrying in ${wait / 1000}s...`)
+      await new Promise(r => setTimeout(r, wait))
+    }
+  }
+  throw lastErr
+}
 
 // Initialize tables — called once at startup
 let _initDone = false
 let _initPromise: Promise<void> | null = null
 
-async function createTables() {
+async function createTablesInner() {
   await sql`
     CREATE TABLE IF NOT EXISTS channels (
       id TEXT PRIMARY KEY,
@@ -149,16 +169,26 @@ async function createTables() {
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS channel_id TEXT DEFAULT 'default'`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS gcp_credential_id TEXT DEFAULT ''`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS youtube_link TEXT DEFAULT ''`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS final_url TEXT DEFAULT ''`
+}
+
+async function createTables(): Promise<void> {
+  await withRetry(() => createTablesInner(), 'createTables')
 }
 
 export async function ensureDb(): Promise<void> {
   if (_initDone) return
-  if (!_initPromise) _initPromise = createTables().then(() => { _initDone = true })
+  if (!_initPromise) _initPromise = createTables().then(() => { _initDone = true }).catch(err => {
+    // Reset so next request can retry from scratch
+    _initPromise = null
+    throw err
+  })
   await _initPromise
 }
 
-// Fire-and-forget on module load so tables exist before first request
-ensureDb().catch(err => console.error('DB init error:', err))
+// Fire-and-forget on module load so tables exist before first request.
+// Failures are non-fatal — first real request will retry via ensureDb().
+ensureDb().catch(err => console.error('DB init error (will retry on first request):', err?.message || err))
 
 export { sql }
 
@@ -173,8 +203,11 @@ export interface Channel {
 }
 
 export const channelsDb = {
-  getAll: async (): Promise<Channel[]> => {
+  getAll: async (userId?: string): Promise<Channel[]> => {
     await ensureDb()
+    if (userId) {
+      return sql<Channel[]>`SELECT * FROM channels WHERE is_active = true AND user_id = ${userId} ORDER BY created_at ASC`
+    }
     return sql<Channel[]>`SELECT * FROM channels WHERE is_active = true ORDER BY created_at ASC`
   },
   getById: async (id: string): Promise<Channel | null> => {
@@ -299,8 +332,17 @@ export const storiesDb = {
     return row ?? null
   },
 
-  getAll: async (): Promise<StoryRow[]> => {
+  getAll: async (channelId?: string, userId?: string): Promise<StoryRow[]> => {
     await ensureDb()
+    if (channelId && userId) {
+      return sql<StoryRow[]>`SELECT * FROM stories WHERE channel_id = ${channelId} AND user_id = ${userId} ORDER BY created_at DESC`
+    }
+    if (userId) {
+      return sql<StoryRow[]>`SELECT * FROM stories WHERE user_id = ${userId} ORDER BY created_at DESC`
+    }
+    if (channelId) {
+      return sql<StoryRow[]>`SELECT * FROM stories WHERE channel_id = ${channelId} ORDER BY created_at DESC`
+    }
     return sql<StoryRow[]>`SELECT * FROM stories ORDER BY created_at DESC`
   },
 
@@ -441,8 +483,11 @@ export interface GcpCredential {
 }
 
 export const gcpCredentialsDb = {
-  getAll: async (): Promise<Omit<GcpCredential, 'sa_json'>[]> => {
+  getAll: async (userId?: string): Promise<Omit<GcpCredential, 'sa_json'>[]> => {
     await ensureDb()
+    if (userId) {
+      return sql<Omit<GcpCredential, 'sa_json'>[]>`SELECT id, name, project_id, bucket, is_active, created_at FROM gcp_credentials WHERE is_active = true AND user_id = ${userId} ORDER BY created_at`
+    }
     return sql<Omit<GcpCredential, 'sa_json'>[]>`SELECT id, name, project_id, bucket, is_active, created_at FROM gcp_credentials WHERE is_active = true ORDER BY created_at`
   },
   get: async (id: string): Promise<GcpCredential | null> => {

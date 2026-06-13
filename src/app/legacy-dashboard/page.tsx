@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { Suspense } from 'react'
+import Link from 'next/link'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -71,11 +72,19 @@ function ConfirmDialog({ open, title, message, onConfirm, onCancel, danger = tru
 // ─── Root ──────────────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<string, { bar: string; badge: string; text: string }> = {
-  clips_ready:   { bar: 'bg-emerald-400', badge: 'bg-emerald-100 text-emerald-700', text: 'Ready' },
-  post_produced: { bar: 'bg-blue-400',    badge: 'bg-blue-100 text-blue-700',       text: 'Edited' },
+  clips_ready:   { bar: 'bg-emerald-400', badge: 'bg-emerald-100 text-emerald-700', text: 'Ready to merge' },
+  post_produced: { bar: 'bg-blue-400',    badge: 'bg-blue-100 text-blue-700',       text: 'Ready to publish' },
   published:     { bar: 'bg-violet-400',  badge: 'bg-violet-100 text-violet-700',   text: 'Live' },
   generating:    { bar: 'bg-amber-400',   badge: 'bg-amber-100 text-amber-700',     text: 'Generating' },
   failed:        { bar: 'bg-red-400',     badge: 'bg-red-100 text-red-600',         text: 'Failed' },
+}
+
+const NEXT_ACTION: Record<string, { title: string; body: string; cta: string; ctaTab?: string; bg: string }> = {
+  clips_ready:   { title: '⬇ Step 1: Download assets',  body: 'Download the ZIP, merge clips with the audio in CapCut/DaVinci, then upload the final reel back.', cta: 'Download ZIP', ctaTab: 'clips',   bg: 'bg-emerald-50 border-emerald-200' },
+  post_produced: { title: '▶ Ready to publish',          body: 'Final reel is ready. Publish directly to YouTube with one click.',                                cta: 'Open YouTube tab', ctaTab: 'publish', bg: 'bg-blue-50 border-blue-200' },
+  published:     { title: '✓ Live on YouTube',           body: 'Watch performance — analytics will show CTR, retention, and views in the Analytics tab.',         cta: 'Open on YouTube',  ctaTab: 'publish', bg: 'bg-violet-50 border-violet-200' },
+  generating:    { title: '⏳ Generating',                body: 'AI is producing scripts, audio, and clips. Stay on this page or check back in ~12 minutes.',      cta: 'View progress',    ctaTab: 'history', bg: 'bg-amber-50 border-amber-200' },
+  failed:        { title: '✗ Something went wrong',      body: 'See Scene History for which step or scenes failed. You can retry filtered scenes from there.',    cta: 'See history',      ctaTab: 'history', bg: 'bg-red-50 border-red-200' },
 }
 
 const NAV = [
@@ -85,6 +94,14 @@ const NAV = [
   { key: 'settings',  icon: '◈',  label: 'Settings'  },
 ] as const
 
+interface Channel {
+  id: string; name: string; emoji: string
+  sheet_id?: string; sheet_tab?: string; gcs_bucket?: string
+  yt_refresh_token?: string; yt_client_id?: string
+  yt_client_secret?: string; yt_redirect_uri?: string
+  is_default?: boolean
+}
+
 function DashboardInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -92,32 +109,70 @@ function DashboardInner() {
   // URL-driven state — back/forward button works correctly
   const tab = (searchParams.get('tab') || 'generate') as 'stories' | 'generate' | 'analytics' | 'settings'
   const selectedId = searchParams.get('story')
+  const channelParam = searchParams.get('channel') || ''
 
   const [stories, setStories] = useState<Story[]>([])
+  const [channels, setChannels] = useState<Channel[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false)
+
+  // Determine current channel — URL param wins, else first available
+  const currentChannel = channels.find(c => c.id === channelParam) || channels[0] || null
 
   const selected = stories.find(s => s.story_id === selectedId) || null
 
+  // Load channels once
+  useEffect(() => {
+    fetch('/api/channels').then(r => r.json())
+      .then(d => setChannels(d.channels || []))
+      .catch(() => {})
+  }, [])
+
   const loadStories = useCallback(() => {
     setLoading(true)
-    fetch('/api/stories').then(r => r.json())
+    const url = currentChannel?.id ? `/api/stories?channelId=${currentChannel.id}` : '/api/stories'
+    fetch(url).then(r => r.json())
       .then(d => { setStories(d.stories || []); setLoading(false) })
       .catch(() => setLoading(false))
-  }, [])
+  }, [currentChannel?.id])
 
   useEffect(() => { loadStories() }, [loadStories])
 
-  const filtered = stories.filter(s =>
-    !search || s.topic.toLowerCase().includes(search.toLowerCase()) || s.story_id.includes(search)
-  )
+  // Sort: needs-action statuses bubble to top; within group, newest first
+  const STATUS_PRIORITY: Record<string, number> = {
+    clips_ready: 0,    // user must merge + upload
+    post_produced: 1,  // user can publish
+    failed: 2,         // user might want to retry
+    generating: 3,     // wait
+    published: 4,      // done
+  }
+  const filtered = stories
+    .filter(s => !search || s.topic.toLowerCase().includes(search.toLowerCase()) || s.story_id.includes(search))
+    .slice()
+    .sort((a, b) => {
+      const pa = STATUS_PRIORITY[a.status] ?? 5
+      const pb = STATUS_PRIORITY[b.status] ?? 5
+      if (pa !== pb) return pa - pb
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    })
 
   const navigate = useCallback((key: typeof tab, storyId?: string) => {
     const params = new URLSearchParams()
     params.set('tab', key)
     if (storyId) params.set('story', storyId)
+    if (channelParam) params.set('channel', channelParam)
     router.push(`/?${params.toString()}`)
-  }, [router])
+  }, [router, channelParam])
+
+  const switchChannel = useCallback((channelId: string) => {
+    const params = new URLSearchParams()
+    params.set('tab', tab)
+    params.set('channel', channelId)
+    // Drop story selection when switching channel — likely doesn't belong
+    router.push(`/?${params.toString()}`)
+    setChannelPickerOpen(false)
+  }, [router, tab])
 
   const selectStory = useCallback((story: Story) => {
     navigate('stories', story.story_id)
@@ -133,13 +188,58 @@ function DashboardInner() {
       {/* ══════════ DARK SIDEBAR ══════════ */}
       <aside className="hidden md:flex flex-col w-56 shrink-0 bg-[#111111] text-white overflow-hidden">
 
-        {/* Logo */}
-        <div className="px-4 pt-5 pb-4 flex items-center gap-2.5 border-b border-white/10">
-          <img src="/logo_jpg.jpg" className="w-7 h-7 rounded-lg object-cover" alt="" />
-          <div>
-            <p className="text-sm font-bold tracking-tight">KathaKar</p>
-            <p className="text-xs text-white/30">AI Reel Studio</p>
-          </div>
+        {/* Channel switcher */}
+        <div className="relative px-3 pt-4 pb-3 border-b border-white/10">
+          <button onClick={() => setChannelPickerOpen(o => !o)}
+            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-white/5 transition-colors group">
+            <div className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center text-base shrink-0">
+              {currentChannel?.emoji || '📺'}
+            </div>
+            <div className="flex-1 min-w-0 text-left">
+              <p className="text-sm font-bold tracking-tight truncate">
+                {currentChannel?.name || 'Loading...'}
+              </p>
+              <p className="text-xs text-white/30">AI Studio</p>
+            </div>
+            <svg className={`w-4 h-4 text-white/40 shrink-0 transition-transform ${channelPickerOpen ? 'rotate-180' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+
+          {channelPickerOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setChannelPickerOpen(false)} />
+              <div className="absolute left-3 right-3 top-full mt-1 z-20 bg-[#1a1a1a] border border-white/10 rounded-xl shadow-2xl py-1 max-h-72 overflow-y-auto">
+                {channels.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-white/40">No channels yet</div>
+                ) : channels.map(ch => {
+                  const isCurrent = currentChannel?.id === ch.id
+                  return (
+                    <button key={ch.id} onClick={() => switchChannel(ch.id)}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 text-left hover:bg-white/10 transition-colors
+                        ${isCurrent ? 'bg-white/5' : ''}`}>
+                      <div className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center text-base shrink-0">
+                        {ch.emoji}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-white truncate">{ch.name}</p>
+                        <p className="text-xs text-white/30 truncate">
+                          {ch.yt_refresh_token ? '✓ YT connected' : 'No YT auth'}
+                          {ch.is_default ? ' · env default' : ''}
+                        </p>
+                      </div>
+                      {isCurrent && <span className="text-white/60 text-xs">●</span>}
+                    </button>
+                  )
+                })}
+                <button onClick={() => router.push('/?tab=settings')}
+                  className="w-full px-3 py-2 text-left text-xs text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors border-t border-white/10 mt-1">
+                  + Manage channels
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Nav */}
@@ -155,6 +255,19 @@ function DashboardInner() {
               {n.label}
             </button>
           ))}
+          {/* Spotlight CTA — Create Ad wizard */}
+          <Link href="/ads"
+            className="mt-2 w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium bg-gradient-to-r from-purple-500/20 to-pink-500/20 hover:from-purple-500/30 hover:to-pink-500/30 text-white transition-all text-left border border-white/10">
+            <span className="text-base leading-none w-4 text-center">🎤</span>
+            Create AI Ad
+            <span className="ml-auto text-xs px-1.5 py-0.5 bg-white/15 rounded-full font-semibold">NEW</span>
+          </Link>
+          {/* Profile / account settings */}
+          <Link href="/profile"
+            className="mt-1 w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-white/40 hover:text-white/70 hover:bg-white/5 transition-all text-left">
+            <span className="text-base leading-none w-4 text-center">◉</span>
+            Profile & Accounts
+          </Link>
         </nav>
 
         {/* Story list (always visible in sidebar) */}
@@ -212,7 +325,7 @@ function DashboardInner() {
               className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80 rounded-lg text-xs transition-colors">
               ↺ Refresh
             </button>
-            <button onClick={async () => { await fetch('/api/auth/logout', { method: 'POST' }); window.location.href = '/login' }}
+            <button onClick={async () => { (await import('next-auth/react')).signOut({ callbackUrl: '/welcome' }) }}
               className="flex-1 py-1.5 bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80 rounded-lg text-xs transition-colors">
               Sign out
             </button>
@@ -232,10 +345,15 @@ function DashboardInner() {
               </svg>
             </button>
           ) : (
-            <div className="flex items-center gap-2">
-              <img src="/logo_jpg.jpg" className="w-6 h-6 rounded-md object-cover" alt="" />
-              <span className="font-bold text-white text-sm">KathaKar</span>
-            </div>
+            <button onClick={() => setChannelPickerOpen(o => !o)} className="flex items-center gap-2">
+              <div className="w-6 h-6 rounded-md bg-white/10 flex items-center justify-center text-sm">
+                {currentChannel?.emoji || '📺'}
+              </div>
+              <span className="font-bold text-white text-sm">{currentChannel?.name || 'Loading'}</span>
+              <svg className="w-3 h-3 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
           )}
           <span className="ml-auto text-xs text-white/40 capitalize">{tab}</span>
         </header>
@@ -324,7 +442,7 @@ function DashboardInner() {
 
           {tab === 'analytics' && (
             <div className="h-full overflow-y-auto p-4 md:p-8 pb-20 md:pb-8">
-              <AnalyticsView />
+              <AnalyticsView channelId={currentChannel?.id} />
             </div>
           )}
 
@@ -826,6 +944,34 @@ function StoryDetail({ story, onDelete, onUpdate }: { story: Story; onDelete: ()
             </svg>
           </button>
         </div>
+
+        {/* Next-action callout */}
+        {NEXT_ACTION[story.status] && (
+          <div className={`mx-5 mb-3 rounded-xl border p-3 ${NEXT_ACTION[story.status].bg}`}>
+            <div className="flex items-start gap-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-900">{NEXT_ACTION[story.status].title}</p>
+                <p className="text-xs text-gray-600 mt-0.5 leading-relaxed">{NEXT_ACTION[story.status].body}</p>
+              </div>
+              {NEXT_ACTION[story.status].ctaTab === 'clips' ? (
+                <button onClick={downloadZip} disabled={downloading}
+                  className="shrink-0 px-3 py-1.5 bg-[#111111] hover:bg-black text-white rounded-lg text-xs font-semibold transition-colors disabled:opacity-50 whitespace-nowrap">
+                  {downloading ? 'Zipping...' : NEXT_ACTION[story.status].cta}
+                </button>
+              ) : story.status === 'published' && story.youtube_link ? (
+                <a href={story.youtube_link} target="_blank" rel="noreferrer"
+                  className="shrink-0 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold transition-colors whitespace-nowrap">
+                  ▶ Open
+                </a>
+              ) : (
+                <button onClick={() => setStoryTab((NEXT_ACTION[story.status].ctaTab || 'clips') as typeof storyTab)}
+                  className="shrink-0 px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap">
+                  {NEXT_ACTION[story.status].cta}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Actions row */}
         <div className="px-5 pb-3 flex items-center gap-2">
@@ -1915,12 +2061,13 @@ function YoutubeUpload({ story, clips, hasAudio, onUpdate }: {
 // ─── Settings View ─────────────────────────────────────────────────────────────
 
 function SettingsView() {
-  const [sub, setSub] = useState<'categories' | 'credentials' | 'prompts' | 'schedule'>('categories')
+  const [sub, setSub] = useState<'channels' | 'categories' | 'credentials' | 'prompts' | 'schedule'>('channels')
 
   const TABS = [
-    { key: 'categories',  label: '🎬 Content Types' },
-    { key: 'credentials', label: '🔑 GCP Credentials' },
-    { key: 'prompts',     label: '🎯 Default Prompts' },
+    { key: 'channels',    label: '📺 Channels' },
+    { key: 'categories',  label: '🎬 Content' },
+    { key: 'credentials', label: '🔑 GCP' },
+    { key: 'prompts',     label: '🎯 Prompts' },
     { key: 'schedule',    label: '📅 Schedule' },
   ] as const
 
@@ -1928,23 +2075,169 @@ function SettingsView() {
     <div className="max-w-3xl mx-auto w-full pb-8 space-y-4">
       <div>
         <h1 className="text-lg font-bold text-gray-900">⚙️ Settings</h1>
-        <p className="text-xs text-gray-400 mt-0.5">Manage content types, GCP accounts, AI prompts, and post scheduling</p>
+        <p className="text-xs text-gray-400 mt-0.5">Channels, content types, GCP accounts, AI prompts, scheduling</p>
       </div>
 
       {/* Sub-nav */}
-      <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
+      <div className="flex gap-1 bg-gray-100 rounded-xl p-1 overflow-x-auto">
         {TABS.map(t => (
           <button key={t.key} onClick={() => setSub(t.key as typeof sub)}
-            className={`flex-1 py-2 rounded-lg text-xs font-medium transition-all ${sub === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
+            className={`flex-1 min-w-fit py-2 px-3 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${sub === t.key ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}>
             {t.label}
           </button>
         ))}
       </div>
 
+      {sub === 'channels'    && <ChannelsSettings />}
       {sub === 'categories'  && <CategoriesSettings />}
       {sub === 'credentials' && <CredentialsSettings />}
       {sub === 'prompts'     && <PromptsSettings />}
       {sub === 'schedule'    && <ScheduleSettings />}
+    </div>
+  )
+}
+
+// ── Channels Settings ────────────────────────────────────────────────────────
+
+function ChannelsSettings() {
+  const [channels, setChannels] = useState<(Channel & { yt_refresh_token?: string })[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ id: '', name: '', emoji: '📺', sheet_id: '', sheet_tab: 'Sheet2', gcs_bucket: 'ai_clip_007' })
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = async () => {
+    const d = await fetch('/api/channels').then(r => r.json())
+    setChannels(d.channels || [])
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const save = async () => {
+    if (!form.id || !form.name || !form.sheet_id || !form.gcs_bucket) { setError('id, name, sheet_id, bucket required'); return }
+    setSaving(true); setError('')
+    const res = await fetch('/api/channels', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) })
+    const data = await res.json()
+    if (!res.ok) { setError(data.error); setSaving(false); return }
+    await load(); setShowForm(false); setSaving(false)
+    setForm({ id: '', name: '', emoji: '📺', sheet_id: '', sheet_tab: 'Sheet2', gcs_bucket: 'ai_clip_007' })
+  }
+
+  const deleteChannel = async (id: string, name: string) => {
+    if (!confirm(`Deactivate channel "${name}"? Its stories stay but no longer sync.`)) return
+    await fetch(`/api/channels/${id}`, { method: 'DELETE' })
+    load()
+  }
+
+  if (loading) return <div className="text-center py-8 text-gray-400 animate-pulse">Loading...</div>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center">
+        <p className="text-xs text-gray-500">YouTube channels managed by this dashboard. Each has its own OAuth + assets.</p>
+        <button onClick={() => setShowForm(s => !s)}
+          className="px-3 py-1.5 bg-[#111111] hover:bg-black text-white rounded-xl text-xs font-semibold whitespace-nowrap">
+          + Add Channel
+        </button>
+      </div>
+
+      {showForm && (
+        <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-gray-800">New Channel</p>
+            <button onClick={() => { setShowForm(false); setError('') }}
+              className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <p className="text-xs text-gray-500 mb-1">ID *</p>
+              <input value={form.id} onChange={e => setForm(f => ({...f, id: e.target.value.toLowerCase().replace(/\s+/g, '_')}))}
+                placeholder="kissopedia"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Name *</p>
+              <input value={form.name} onChange={e => setForm(f => ({...f, name: e.target.value}))}
+                placeholder="Kissopedia"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Emoji</p>
+              <input value={form.emoji} onChange={e => setForm(f => ({...f, emoji: e.target.value}))}
+                placeholder="📺" maxLength={4}
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 text-center" />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <p className="text-xs text-gray-500 mb-1">Sheet ID *</p>
+              <input value={form.sheet_id} onChange={e => setForm(f => ({...f, sheet_id: e.target.value}))}
+                placeholder="1ABC...xyz"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            </div>
+            <div>
+              <p className="text-xs text-gray-500 mb-1">GCS Bucket *</p>
+              <input value={form.gcs_bucket} onChange={e => setForm(f => ({...f, gcs_bucket: e.target.value}))}
+                placeholder="ai_clip_007"
+                className="w-full px-3 py-2 text-sm bg-white border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-400 font-mono" />
+            </div>
+          </div>
+
+          <div className="bg-blue-50 border border-blue-100 rounded-xl px-3 py-2 text-xs text-blue-600">
+            ℹ After creating, click <strong>"Connect YouTube"</strong> on the channel card to OAuth its YT account.
+          </div>
+
+          {error && <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-lg">{error}</p>}
+
+          <button onClick={save} disabled={saving}
+            className="w-full py-2.5 bg-[#111111] hover:bg-black disabled:opacity-40 text-white rounded-xl text-xs font-semibold">
+            {saving ? 'Creating...' : '+ Create Channel'}
+          </button>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {channels.length === 0 && !showForm && (
+          <div className="text-center py-8 text-gray-400 text-sm">No channels yet. Click "+ Add Channel" to create one.</div>
+        )}
+        {channels.map(ch => {
+          const ytConnected = !!ch.yt_refresh_token
+          return (
+            <div key={ch.id} className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center gap-3">
+              <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center text-xl shrink-0">
+                {ch.emoji || '📺'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-sm font-semibold text-gray-800">{ch.name}</p>
+                  <span className="text-xs font-mono text-gray-400">{ch.id}</span>
+                  {ytConnected ? (
+                    <span className="text-xs px-1.5 py-0.5 bg-emerald-50 text-emerald-600 rounded-full font-medium">✓ YT connected</span>
+                  ) : (
+                    <span className="text-xs px-1.5 py-0.5 bg-amber-50 text-amber-600 rounded-full font-medium">⚠ YT not connected</span>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 mt-0.5 truncate">
+                  Bucket: <span className="font-mono">{ch.gcs_bucket}</span>
+                </p>
+              </div>
+              <div className="shrink-0 flex items-center gap-1">
+                <a href={`/api/auth/youtube?channelId=${ch.id}`}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors ${ytConnected ? 'bg-gray-50 hover:bg-gray-100 text-gray-600' : 'bg-red-50 hover:bg-red-100 text-red-700'}`}>
+                  {ytConnected ? '↻ Re-OAuth' : 'Connect YT →'}
+                </a>
+                <button onClick={() => deleteChannel(ch.id, ch.name)}
+                  className="text-xs text-gray-400 hover:text-red-600 px-2 py-1.5 rounded-lg hover:bg-red-50 transition-colors">
+                  ✕
+                </button>
+              </div>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -2406,13 +2699,17 @@ function ScheduleSettings() {
 
 // ─── Analytics ─────────────────────────────────────────────────────────────────
 
-function AnalyticsView() {
+function AnalyticsView({ channelId }: { channelId?: string }) {
   const [data, setData] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    fetch('/api/analytics')
+    setLoading(true)
+    setError('')
+    setData(null)
+    const url = channelId ? `/api/analytics?channelId=${channelId}` : '/api/analytics'
+    fetch(url)
       .then(async r => {
         const d = await r.json()
         if (!r.ok || d.error) {
@@ -2423,7 +2720,7 @@ function AnalyticsView() {
         setLoading(false)
       })
       .catch(e => { setError(`Network error: ${e.message}`); setLoading(false) })
-  }, [])
+  }, [channelId])
 
   const fmt = (n: number) => {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
@@ -2485,7 +2782,7 @@ function AnalyticsView() {
             <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-xl shrink-0">▶</div>
           )}
           <div className="flex-1 min-w-0">
-            <p className="font-semibold text-gray-900 text-sm">{String(channel.name || 'KathaKar')}</p>
+            <p className="font-semibold text-gray-900 text-sm">{String(channel.name || 'YouTube Channel')}</p>
             <p className="text-xs text-gray-500">
               {fmt(Number(channel.subscribers))} subscribers · {String(channel.videoCount)} videos · {fmt(Number(channel.totalViews))} total views
             </p>

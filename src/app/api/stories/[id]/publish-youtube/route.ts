@@ -11,13 +11,21 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id: storyId } = await params
 
   let title = storyId, description = '', tags: string[] = ['shorts', 'hindi story', 'kathakar']
+  let channelId: string | undefined
 
   try {
     const body = await req.json()
     title = body.title || title
     description = body.description || description
     tags = Array.isArray(body.tags) ? body.tags : tags
+    channelId = body.channelId
   } catch { /* use defaults */ }
+
+  // If channelId not in body, fall back to story's channel_id
+  if (!channelId) {
+    const story = await storiesDb.get(storyId)
+    channelId = story?.channel_id
+  }
 
   // Build the GCS public URL for the uploaded reel
   const gcsUrl = `https://storage.googleapis.com/${process.env.GCS_BUCKET}/stories/${storyId}/final/reel.mp4`
@@ -32,7 +40,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   try {
     // Stream from GCS → YouTube (no client body involved, no size limit)
-    const result = await uploadToYouTube({ videoPath: gcsUrl, title, description, tags, isShort: true })
+    const result = await uploadToYouTube({ videoPath: gcsUrl, title, description, tags, isShort: true, channelId })
 
     const videoId = result.id
     if (!videoId) throw new Error('YouTube returned no video ID')

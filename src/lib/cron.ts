@@ -41,6 +41,7 @@ async function processScheduledPosts() {
             description: ytDesc,
             tags: ytTags,
             isShort: true,
+            channelId: post.channel_id || story.channel_id,
           })
 
           const youtubeUrl = `https://youtube.com/shorts/${result.id}`

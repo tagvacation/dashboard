@@ -31,3 +31,29 @@ export async function getAccessToken(ctx: GcpContext): Promise<string> {
 // Keep these for backward compat (used by veo.ts directly)
 export const GCP_PROJECT = process.env.GCP_PROJECT_ID || 'gen-lang-client-0866402603'
 export const GCP_REGION = 'us-central1'
+
+/**
+ * Load a GcpContext by credential id. Falls back to env default if id is
+ * missing, 'default', or the credential isn't found.
+ *
+ * Used by both story runner and ad runner so account selection is one
+ * code path instead of two.
+ */
+export async function loadGcpContext(credentialId?: string | null): Promise<GcpContext> {
+  if (!credentialId || credentialId === 'default') return defaultContext()
+
+  // Dynamic import to avoid circular dep with lib/db.ts (which doesn't import from auth.ts today,
+  // but keeping this safe for future schema changes)
+  const { gcpCredentialsDb } = await import('../db')
+  const cred = await gcpCredentialsDb.get(credentialId)
+  if (!cred) {
+    console.warn(`[loadGcpContext] credential '${credentialId}' not found — falling back to env default`)
+    return defaultContext()
+  }
+  return {
+    credentials: JSON.parse(cred.sa_json),
+    projectId: cred.project_id,
+    bucket: cred.bucket || process.env.GCS_BUCKET || 'ai_clip_007',
+    region: GCP_REGION,
+  }
+}

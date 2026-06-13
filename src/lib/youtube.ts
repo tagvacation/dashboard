@@ -1,17 +1,37 @@
 import { google } from 'googleapis'
 import { Readable } from 'stream'
+import { channelsDb } from './db'
 
-const oauth2Client = new google.auth.OAuth2(
+// Default YouTube client from env vars (legacy single-channel mode)
+const defaultOauth = new google.auth.OAuth2(
   process.env.YOUTUBE_CLIENT_ID,
   process.env.YOUTUBE_CLIENT_SECRET,
   process.env.YOUTUBE_REDIRECT_URI
 )
+defaultOauth.setCredentials({ refresh_token: process.env.YOUTUBE_REFRESH_TOKEN })
 
-oauth2Client.setCredentials({
-  refresh_token: process.env.YOUTUBE_REFRESH_TOKEN,
-})
+export const youtube = google.youtube({ version: 'v3', auth: defaultOauth })
 
-export const youtube = google.youtube({ version: 'v3', auth: oauth2Client })
+/**
+ * Get an OAuth2 client for a specific channel. Falls back to env vars if no channelId.
+ */
+export async function getYouTubeClientForChannel(channelId?: string) {
+  if (!channelId || channelId === 'default') return defaultOauth
+
+  const channel = await channelsDb.getById(channelId)
+  if (!channel?.yt_refresh_token || !channel?.yt_client_id || !channel?.yt_client_secret) {
+    console.warn(`Channel ${channelId} missing YT credentials, using env default`)
+    return defaultOauth
+  }
+
+  const oauth = new google.auth.OAuth2(
+    channel.yt_client_id,
+    channel.yt_client_secret,
+    channel.yt_redirect_uri || process.env.YOUTUBE_REDIRECT_URI,
+  )
+  oauth.setCredentials({ refresh_token: channel.yt_refresh_token })
+  return oauth
+}
 
 export async function uploadToYouTube({
   videoPath,
@@ -19,13 +39,17 @@ export async function uploadToYouTube({
   description,
   tags,
   isShort = true,
+  channelId,
 }: {
   videoPath: string  // GCS public URL
   title: string
   description: string
   tags: string[]
   isShort?: boolean
+  channelId?: string  // optional — falls back to env vars
 }) {
+  const oauth = await getYouTubeClientForChannel(channelId)
+  const yt = google.youtube({ version: 'v3', auth: oauth })
   // Stream directly from GCS URL — no memory buffer (fixes ECONNRESET on large files)
   const res = await fetch(videoPath, { headers: { 'Accept': 'video/mp4' } })
   if (!res.ok || !res.body) {
@@ -35,7 +59,7 @@ export async function uploadToYouTube({
   // Convert Web ReadableStream to Node.js Readable for googleapis
   const readable = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0])
 
-  const response = await youtube.videos.insert({
+  const response = await yt.videos.insert({
     part: ['snippet', 'status'],
     requestBody: {
       snippet: {
