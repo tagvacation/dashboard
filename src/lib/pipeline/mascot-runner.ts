@@ -22,6 +22,7 @@ interface MascotMeta {
   imageGcsUri: string | null
   cutoutGcsUri?: string | null
   voice?: string | null            // user-picked voice override ('auto' stored as null)
+  music?: string | null            // background-music mood ('none' | mood | null=auto)
   credentialId?: string | null
 }
 
@@ -195,6 +196,7 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
             ctaHi: script.cta_en || 'Shop Now',
           },
           productCutoutGcsUri: meta.cutoutGcsUri || null,
+          music: meta.music || null,
           ctx,
         })
         await sql`UPDATE stories SET final_url = ${finalUrl}, status = 'post_produced' WHERE story_id = ${storyId}`

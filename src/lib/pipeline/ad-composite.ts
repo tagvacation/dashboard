@@ -45,6 +45,7 @@ export interface ComposeMascotOpts {
   scenes: ComposeMascotScene[]     // mascot is IN the clip; we only burn captions
   endcard: EndcardSpec
   productCutoutGcsUri?: string | null   // optional real-product reveal on the end-card
+  music?: string | null                 // mood (epic|upbeat|warm|calm) | 'none' | null=auto
   ctx: GcpContext
 }
 
@@ -81,13 +82,21 @@ function probeDuration(file: string): Promise<number> {
   })
 }
 
-// Optional background-music bed: drop a royalty-free track in src/assets/music/.
-// If none present, ads simply use dialogue + ambient (no music).
-function findMusic(): string | null {
+// Optional background-music bed: drop royalty-free tracks in src/assets/music/,
+// named by mood (e.g. epic.mp3, upbeat.mp3, warm.mp3, calm.mp3). The compositor
+// picks the track whose filename starts with `mood`; falls back to the first track.
+// mood === 'none' disables music; missing folder/tracks → no music (dialogue only).
+function findMusic(mood?: string | null): string | null {
+  if (mood === 'none') return null
   try {
     const dir = join(process.cwd(), 'src/assets/music')
-    const f = readdirSync(dir).find(x => /\.(mp3|m4a|aac|wav|ogg)$/i.test(x))
-    return f ? join(dir, f) : null
+    const files = readdirSync(dir).filter(x => /\.(mp3|m4a|aac|wav|ogg)$/i.test(x))
+    if (!files.length) return null
+    if (mood) {
+      const m = files.find(f => f.toLowerCase().startsWith(mood.toLowerCase()))
+      if (m) return join(dir, m)
+    }
+    return join(dir, files[0])
   } catch { return null }
 }
 
@@ -223,7 +232,7 @@ export async function composeAd({ storyId, scenes, endcard, productCutoutGcsUri,
  * dialogue audio), so we only: normalize + burn Hindi captions per scene, append an
  * optional real-product end-card, concat, and upload. Native dialogue audio is kept.
  */
-export async function composeMascotAd({ storyId, scenes, endcard, productCutoutGcsUri, ctx }: ComposeMascotOpts): Promise<string> {
+export async function composeMascotAd({ storyId, scenes, endcard, productCutoutGcsUri, music: musicMood, ctx }: ComposeMascotOpts): Promise<string> {
   const storage = new Storage({ credentials: ctx.credentials })
   const bucket = storage.bucket(ctx.bucket)
   const work = join(tmpdir(), `mas-${storyId}-${Date.now()}`)
@@ -286,7 +295,7 @@ export async function composeMascotAd({ storyId, scenes, endcard, productCutoutG
     // 3. Assemble: crossfade transitions between scenes + optional background music.
     //    Falls back to a plain concat if the complex graph errors, so we always ship a reel.
     const final = join(work, 'final.mp4')
-    const music = findMusic()
+    const music = findMusic(musicMood)
     try {
       const durs: number[] = []
       for (const s of segments) durs.push(await probeDuration(s))

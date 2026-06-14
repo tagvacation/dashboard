@@ -21,8 +21,11 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, ingredients, target_audience, tone, voice, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
+  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
   const adStyle = body.ad_style === 'mascot' ? 'mascot' : 'emotional'
+  // Resolve background-music mood: explicit pick, 'none', or 'auto' → derive from tone.
+  const TONE_MOOD: Record<string, string> = { bold: 'epic', funny: 'upbeat', emotional: 'warm', warm: 'warm', informative: 'calm' }
+  const musicMood = !music || music === 'auto' ? (TONE_MOOD[tone as string] || 'upbeat') : music
   if (!name || !category || !benefits?.length || !target_audience) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
   }
@@ -58,6 +61,7 @@ export async function POST(req: NextRequest) {
       cutoutGcsUri: cutoutGcsUri || null,
       ad_style: adStyle,
       voice: voice && voice !== 'auto' ? voice : null,
+      music: musicMood,
       credentialId: resolvedCredId,
     }
     await sql`
