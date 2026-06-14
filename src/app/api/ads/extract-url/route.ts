@@ -1,19 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Storage } from '@google-cloud/storage'
 import crypto from 'crypto'
 import sharp from 'sharp'
 import { requireUserId } from '@/lib/auth-server'
-import { defaultContext } from '@/lib/pipeline/auth'
+import { getUserGcpContext } from '@/lib/pipeline/auth'
+import { bucketForContext } from '@/lib/gcs'
 import { callGemini } from '@/lib/pipeline/ad-runner'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
 const CATEGORIES = ['Haircare', 'Skincare', 'Food / Snack', 'Beverage', 'Jewelry', 'Fashion', 'Electronics', 'Home / Kitchen', 'Health / Wellness', 'Other']
-
-const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
-const bucketName = process.env.GCS_BUCKET!
-const bucket = new Storage({ credentials }).bucket(bucketName)
 
 const stripHtml = (s: string) => s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
@@ -31,6 +27,13 @@ export async function POST(req: NextRequest) {
   try {
     const { url } = await req.json()
     if (!url || !/^https?:\/\//.test(url)) return NextResponse.json({ error: 'Enter a valid product URL' }, { status: 400 })
+
+    // Resolve the user's own Cloud account (no env default). Used for Gemini + image storage.
+    let ctx
+    try { ctx = await getUserGcpContext(userId) }
+    catch { return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 }) }
+    const { bucket } = bucketForContext(ctx)
+    const bucketName = ctx.bucket
 
     const clean = url.split('?')[0].replace(/\/$/, '')
     let title = '', description = '', priceNum: number | undefined, imageUrl = '', vendor = '', productType = ''
@@ -63,8 +66,7 @@ export async function POST(req: NextRequest) {
 
     if (!title) return NextResponse.json({ error: 'Could not read this product page' }, { status: 422 })
 
-    // 3. Gemini structures the marketing fields
-    const ctx = defaultContext()
+    // 3. Gemini structures the marketing fields (using the user's own GCP project)
     let structured: Record<string, unknown> = {}
     try {
       structured = await callGemini(

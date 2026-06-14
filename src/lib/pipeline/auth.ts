@@ -1,4 +1,5 @@
 import { google } from 'googleapis'
+import type { GcpCredential } from '../db'
 
 export interface GcpContext {
   credentials: Record<string, unknown>
@@ -7,13 +8,15 @@ export interface GcpContext {
   region: string
 }
 
-// Default context from env vars (Account B)
-export function defaultContext(): GcpContext {
+export const GCP_REGION = 'us-central1'
+
+/** Build a GcpContext from a stored (decrypted) credential row. */
+export function contextFromCredential(cred: GcpCredential): GcpContext {
   return {
-    credentials: JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!),
-    projectId: process.env.GCP_PROJECT_ID || 'gen-lang-client-0866402603',
-    bucket: process.env.GCS_BUCKET || 'ai_clip_007',
-    region: 'us-central1',
+    credentials: JSON.parse(cred.sa_json),
+    projectId: cred.project_id,
+    bucket: cred.bucket,
+    region: GCP_REGION,
   }
 }
 
@@ -28,32 +31,28 @@ export async function getAccessToken(ctx: GcpContext): Promise<string> {
   return token.token
 }
 
-// Keep these for backward compat (used by veo.ts directly)
-export const GCP_PROJECT = process.env.GCP_PROJECT_ID || 'gen-lang-client-0866402603'
-export const GCP_REGION = 'us-central1'
+/**
+ * Resolve a USER's GcpContext (multi-tenant — no env default):
+ *   explicit credentialId → the user's default account → throw NO_GCP_ACCOUNT.
+ * Callers should map NO_GCP_ACCOUNT to an "add a Cloud account" prompt.
+ */
+export async function getUserGcpContext(userId: string, credentialId?: string | null): Promise<GcpContext> {
+  const { gcpCredentialsDb } = await import('../db')
+  let cred: GcpCredential | null = null
+  if (credentialId && credentialId !== 'default') cred = await gcpCredentialsDb.get(credentialId)
+  if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
+  if (!cred) throw new Error('NO_GCP_ACCOUNT')
+  return contextFromCredential(cred)
+}
 
 /**
- * Load a GcpContext by credential id. Falls back to env default if id is
- * missing, 'default', or the credential isn't found.
- *
- * Used by both story runner and ad runner so account selection is one
- * code path instead of two.
+ * Load a GcpContext by credential id (pipeline runs store a real credential id).
+ * Throws NO_GCP_ACCOUNT if the id is missing or not found — there is no env default.
  */
 export async function loadGcpContext(credentialId?: string | null): Promise<GcpContext> {
-  if (!credentialId || credentialId === 'default') return defaultContext()
-
-  // Dynamic import to avoid circular dep with lib/db.ts (which doesn't import from auth.ts today,
-  // but keeping this safe for future schema changes)
+  if (!credentialId || credentialId === 'default') throw new Error('NO_GCP_ACCOUNT')
   const { gcpCredentialsDb } = await import('../db')
   const cred = await gcpCredentialsDb.get(credentialId)
-  if (!cred) {
-    console.warn(`[loadGcpContext] credential '${credentialId}' not found — falling back to env default`)
-    return defaultContext()
-  }
-  return {
-    credentials: JSON.parse(cred.sa_json),
-    projectId: cred.project_id,
-    bucket: cred.bucket || process.env.GCS_BUCKET || 'ai_clip_007',
-    region: GCP_REGION,
-  }
+  if (!cred) throw new Error('NO_GCP_ACCOUNT')
+  return contextFromCredential(cred)
 }

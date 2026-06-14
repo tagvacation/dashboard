@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { listStoryFiles, getFileStream } from '@/lib/gcs'
+import { listStoryFiles, getFileStream, contextForStory } from '@/lib/gcs'
 import archiver from 'archiver'
 import { PassThrough } from 'stream'
 
@@ -10,7 +10,8 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
   const { id: storyId } = await params
 
   try {
-    const files = await listStoryFiles(storyId)
+    const ctx = await contextForStory(storyId)
+    const files = await listStoryFiles(storyId, ctx)
     const relevantFiles = files.filter(f => f.type === 'video' || f.type === 'audio')
 
     if (relevantFiles.length === 0) {
@@ -23,7 +24,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
 
     for (const file of relevantFiles) {
       const fileName = file.name.split('/').pop()!
-      const stream = getFileStream(file.name)
+      const stream = getFileStream(ctx, file.name)
       archive.append(stream, { name: fileName })
     }
 

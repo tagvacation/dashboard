@@ -1,16 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { defaultContext, getAccessToken } from '@/lib/pipeline/auth'
+import { getUserGcpContext, getAccessToken } from '@/lib/pipeline/auth'
+import type { GcpContext } from '@/lib/pipeline/auth'
+import { requireUserId } from '@/lib/auth-server'
 
 export const dynamic = 'force-dynamic'
 
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
-function geminiUrl(): string {
-  const ctx = defaultContext()
+function geminiUrl(ctx: GcpContext): string {
   return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
 }
 
 export async function POST(req: NextRequest) {
+  let userId: string
+  try { userId = await requireUserId() } catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
+  let ctx: GcpContext
+  try { ctx = await getUserGcpContext(userId) } catch { return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 }) }
+
   const { prompt, primary_anchor, secondary_anchor, has_secondary, issue } = await req.json()
   if (!prompt) return NextResponse.json({ error: 'prompt required' }, { status: 400 })
 
@@ -62,7 +68,6 @@ ${action || '(empty — create a peaceful scene-appropriate action based on cont
 Make it pass Veo content filters while keeping the scene visually meaningful.`
 
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-  const ctx = defaultContext()
 
   try {
     const fetchBody = JSON.stringify({
@@ -72,7 +77,7 @@ Make it pass Veo content filters while keeping the scene visually meaningful.`
     })
     const doFetch = async () => {
       const token = await getAccessToken(ctx)
-      return fetch(geminiUrl(), {
+      return fetch(geminiUrl(ctx), {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: fetchBody,

@@ -342,9 +342,17 @@ export default function CreateAdPage() {
 
         {/* Submit */}
         <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
+          {creds.length === 0 && (
+            <div className="mb-4 px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg text-sm text-amber-200">
+              Connect your Google Cloud account to generate (Vertex/Veo + a GCS bucket).{' '}
+              <a href="/profile/accounts" className="underline font-semibold hover:text-amber-100">Add a Cloud account →</a>
+            </div>
+          )}
           {error && (
             <div className="mb-4 px-4 py-2.5 bg-red-500/10 border border-red-500/20 rounded-lg text-sm text-red-300">
-              {error}
+              {error === 'ADD_CLOUD_ACCOUNT'
+                ? <>You need a Google Cloud account first. <a href="/profile/accounts" className="underline font-semibold">Add one →</a></>
+                : error}
             </div>
           )}
           <div className="flex items-center justify-between gap-4">
@@ -363,7 +371,7 @@ export default function CreateAdPage() {
                 </>
               )}
             </div>
-            <button onClick={submit} disabled={submitting || !isValid}
+            <button onClick={submit} disabled={submitting || !isValid || creds.length === 0}
               className="px-6 py-3 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold shadow-lg shadow-purple-500/30 transition-all">
               {submitting ? (
                 <span className="inline-flex items-center gap-2">

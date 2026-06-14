@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireUserId } from '@/lib/auth-server'
-import { sql, pipelineDb, storiesDb } from '@/lib/db'
+import { sql, pipelineDb, gcpCredentialsDb } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
@@ -27,6 +27,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
   }
 
+  // Resolve the user's Cloud account (no env default). Gate if they have none.
+  let cred = (credentialId && credentialId !== 'default') ? await gcpCredentialsDb.get(credentialId) : null
+  if (cred && cred.user_id !== userId) cred = null // ownership check
+  if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
+  if (!cred) return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 })
+  const resolvedCredId = cred.id
+
   // Generate story_id
   // URL-safe slug: collapse any non-alphanumeric run (spaces, %, etc.) to '_'.
   // A stray '%' here breaks /library/[id] routing (malformed percent-escape → 400).
@@ -38,8 +45,8 @@ export async function POST(req: NextRequest) {
   try {
     // Create story + pipeline_run records — runner picks it up
     await sql`
-      INSERT INTO stories (story_id, topic, theme, status, storage_path, category_id, user_id)
-      VALUES (${storyId}, ${`${name} — AI Ad`}, ${'ai_ad'}, ${'init'}, ${`stories/${storyId}/`}, ${'ai_ad_talking_product'}, ${userId})
+      INSERT INTO stories (story_id, topic, theme, status, storage_path, category_id, user_id, gcp_credential_id)
+      VALUES (${storyId}, ${`${name} — AI Ad`}, ${'ai_ad'}, ${'init'}, ${`stories/${storyId}/`}, ${'ai_ad_talking_product'}, ${userId}, ${resolvedCredId})
     `
     await pipelineDb.create(storyId)
 
@@ -50,7 +57,7 @@ export async function POST(req: NextRequest) {
       imageGcsUri: imageGcsUri || null,
       cutoutGcsUri: cutoutGcsUri || null,
       ad_style: adStyle,
-      credentialId: credentialId || null,
+      credentialId: resolvedCredId,
     }
     await sql`
       UPDATE pipeline_runs SET operation_ids = ${sql.json(meta)},

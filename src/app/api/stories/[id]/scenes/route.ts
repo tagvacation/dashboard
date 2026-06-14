@@ -1,28 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { sceneJobsDb, gcpCredentialsDb } from '@/lib/db'
+import { sceneJobsDb } from '@/lib/db'
 import { submitVeoClip, pollVeoOperation } from '@/lib/pipeline/veo'
-import { defaultContext } from '@/lib/pipeline/auth'
-import type { GcpContext } from '@/lib/pipeline/auth'
-import { Storage } from '@google-cloud/storage'
+import { contextForStory, bucketForContext, publicUrl } from '@/lib/gcs'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 300
 
-const DEFAULT_BUCKET = process.env.GCS_BUCKET || 'ai_clip_007'
-const PUBLIC_BASE = `https://storage.googleapis.com/${DEFAULT_BUCKET}`
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-
-async function getContext(credentialId?: string): Promise<GcpContext> {
-  if (!credentialId || credentialId === 'default') return defaultContext()
-  const cred = await gcpCredentialsDb.get(credentialId)
-  if (!cred) return defaultContext()
-  return {
-    credentials: JSON.parse(cred.sa_json),
-    projectId: cred.project_id,
-    bucket: DEFAULT_BUCKET,
-    region: 'us-central1',
-  }
-}
 
 // GET: list all scene jobs for a story
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -35,10 +19,14 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 // Body: { scene_num: "03", video_prompt?: "custom override prompt" }
 export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id: storyId } = await params
-  const { scene_num, video_prompt: customPrompt, credential_id, model } = await req.json()
-  const ctx = await getContext(credential_id)
+  const { scene_num, video_prompt: customPrompt, model } = await req.json()
 
   if (!scene_num) return NextResponse.json({ error: 'scene_num required' }, { status: 400 })
+
+  // Use the story's own Cloud account.
+  let ctx
+  try { ctx = await contextForStory(storyId) }
+  catch { return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 }) }
 
   // Get the latest job for this scene to inherit anchors/beat/tts
   const jobs = await sceneJobsDb.getByStory(storyId)
@@ -95,14 +83,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       return NextResponse.json({ error: 'Veo did not respond in time. Try again.' }, { status: 408 })
     }
 
-    // Upload to GCS (always default bucket)
+    // Upload to the story's own bucket
     const clipPath = `stories/${storyId}/clips/scene_${scene_num}.mp4`
     const buf = Buffer.from(base64, 'base64')
-    const defaultCreds = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
-    const { Storage: GCS } = await import('@google-cloud/storage')
-    const gcsStorage = new GCS({ credentials: defaultCreds })
-    await gcsStorage.bucket(DEFAULT_BUCKET).file(clipPath).save(buf, { contentType: 'video/mp4' })
-    const clipUrl = `${PUBLIC_BASE}/${clipPath}`
+    const { bucket } = bucketForContext(ctx)
+    await bucket.file(clipPath).save(buf, { contentType: 'video/mp4' })
+    const clipUrl = publicUrl(ctx, clipPath)
 
     await sceneJobsDb.update(storyId, scene_num, nextAttempt, { status: 'done' })
 

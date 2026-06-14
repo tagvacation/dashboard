@@ -1,20 +1,19 @@
 import { settingsDb } from '../db'
-import { defaultContext, getAccessToken } from './auth'
+import { getAccessToken } from './auth'
+import type { GcpContext } from './auth'
 import type { Script, Scene } from './types'
 
 // Vertex AI Gemini endpoint — uses service account auth (not API key)
 // Same request/response format as Gemini Developer API; no quota issues with credits
 const GEMINI_MODEL = 'gemini-2.5-flash'
 
-function geminiUrl(): string {
-  const ctx = defaultContext()
+function geminiUrl(ctx: GcpContext): string {
   return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
 }
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-async function callGemini(systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
-  const ctx = defaultContext()
+async function callGemini(ctx: GcpContext, systemPrompt: string, userPrompt: string, temperature = 0.8): Promise<string> {
   const body = JSON.stringify({
     system_instruction: { parts: [{ text: systemPrompt }] },
     contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -23,7 +22,7 @@ async function callGemini(systemPrompt: string, userPrompt: string, temperature 
 
   const doFetch = async () => {
     const token = await getAccessToken(ctx)
-    return fetch(geminiUrl(), {
+    return fetch(geminiUrl(ctx), {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body,
@@ -304,12 +303,12 @@ async function getPrompt(key: keyof typeof DEFAULT_PROMPTS): Promise<string> {
 
 // ─── Public functions ─────────────────────────────────────────────────────────
 
-export async function pickTopic(storyId: string, promptOverride?: string): Promise<{ topic: string; theme: string; hook_idea: string }> {
+export async function pickTopic(ctx: GcpContext, storyId: string, promptOverride?: string): Promise<{ topic: string; theme: string; hook_idea: string }> {
   const system = promptOverride || await getPrompt('topic_picker')
   const user = `Generate a fresh story topic. story_id: ${storyId}
 Return JSON: { "topic": "...", "theme": "string", "hook_idea": "..." }`
 
-  const raw = await callGemini(system, user)
+  const raw = await callGemini(ctx, system, user)
   const parsed = JSON.parse(raw)
   return { topic: parsed.topic, theme: parsed.theme, hook_idea: parsed.hook_idea }
 }
@@ -347,7 +346,7 @@ const SCRIPT_JSON_EXAMPLE = `{
   "total_scenes": 10
 }`
 
-export async function writeScript(storyId: string, topic: string, theme: string, promptOverride?: string): Promise<Script> {
+export async function writeScript(ctx: GcpContext, storyId: string, topic: string, theme: string, promptOverride?: string): Promise<Script> {
   const system = promptOverride || await getPrompt('script_writer')
   const user = `story_id: ${storyId}
 theme: ${theme}
@@ -373,7 +372,7 @@ Your output must be a SINGLE JSON object with these exact keys:
 - scenes (array of 8-10 objects, each with: scene_num INTEGER, beat, video_prompt, tts_text, caption)
 - total_scenes (integer)`
 
-  const raw = await callGemini(system, user)
+  const raw = await callGemini(ctx, system, user)
 
   // Parse with validation
   let parsed: Record<string, unknown>
@@ -448,9 +447,7 @@ Your output must be a SINGLE JSON object with these exact keys:
  * 2. We PROGRAMMATICALLY reconstruct: anchor + new_action + style_suffix
  * This guarantees character anchor and style NEVER change between attempts.
  */
-export async function rewriteFilteredPrompt(topic: string, scene: Scene): Promise<string> {
-  const ctx = defaultContext()
-
+export async function rewriteFilteredPrompt(ctx: GcpContext, topic: string, scene: Scene): Promise<string> {
   // Extract the action-only part from original prompt
   // Format: [anchor] [action] [style_suffix]
   const styleSuffix = STYLE_SUFFIX
@@ -494,7 +491,7 @@ Rewrite: peaceful story-relevant alternative (1-2 sentences only). No character 
   })
   const doRewriteFetch = async () => {
     const token = await getAccessToken(ctx)
-    return fetch(geminiUrl(), {
+    return fetch(geminiUrl(ctx), {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: rewriteBody,

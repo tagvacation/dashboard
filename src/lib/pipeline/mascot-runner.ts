@@ -62,7 +62,7 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
     let productImage: { data: string; mimeType: string } | undefined
     if (meta.imageGcsUri) {
       try {
-        const buf = await downloadGsUri(meta.imageGcsUri)
+        const buf = await downloadGsUri(meta.imageGcsUri, ctx)
         const mimeType = meta.imageGcsUri.endsWith('.jpg') || meta.imageGcsUri.endsWith('.jpeg') ? 'image/jpeg'
           : meta.imageGcsUri.endsWith('.webp') ? 'image/webp' : 'image/png'
         productImage = { data: buf.toString('base64'), mimeType }

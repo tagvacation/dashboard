@@ -5,7 +5,7 @@
  */
 import { Storage } from '@google-cloud/storage'
 import { sql, pipelineDb, sceneJobsDb, storiesDb } from '../db'
-import { defaultContext, loadGcpContext, getAccessToken } from './auth'
+import { loadGcpContext, getAccessToken } from './auth'
 import type { GcpContext } from './auth'
 import { submitVeoClip, pollVeoOperation } from './veo'
 import { generateFullNarration } from './tts'
@@ -151,7 +151,7 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     let productImage: { data: string; mimeType: string } | undefined
     if (imageGcsUri) {
       try {
-        const imgBuf = await downloadGsUri(imageGcsUri)
+        const imgBuf = await downloadGsUri(imageGcsUri, ctx)
         const mimeType = imageGcsUri.endsWith('.jpg') || imageGcsUri.endsWith('.jpeg') ? 'image/jpeg'
           : imageGcsUri.endsWith('.webp') ? 'image/webp' : 'image/png'
         productImage = { data: imgBuf.toString('base64'), mimeType }

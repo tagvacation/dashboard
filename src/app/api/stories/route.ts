@@ -4,8 +4,6 @@ import { requireUserId } from '@/lib/auth-server'
 
 export const dynamic = 'force-dynamic'
 
-const PUBLIC_BASE = `https://storage.googleapis.com/${process.env.GCS_BUCKET}`
-
 /**
  * GET /api/stories — fast list endpoint.
  *
@@ -34,14 +32,24 @@ export async function GET(req: NextRequest) {
       ORDER BY story_id, scene_num
     `
 
+    // Resolve each story's bucket (per-user) via its credential — one batch query.
+    const credIds = [...new Set(stories.map(s => (s as { gcp_credential_id?: string }).gcp_credential_id).filter(Boolean))] as string[]
+    const credRows = credIds.length
+      ? await sql<{ id: string; bucket: string }[]>`SELECT id, bucket FROM gcp_credentials WHERE id = ANY(${credIds})`
+      : []
+    const bucketByCred: Record<string, string> = Object.fromEntries(credRows.map(r => [r.id, r.bucket]))
+    const bucketForStory = (s: { gcp_credential_id?: string }) => bucketByCred[s.gcp_credential_id || ''] || ''
+    const storyById = Object.fromEntries(stories.map(s => [s.story_id, s]))
+
     // Group by story_id (only most recent attempt's done scenes count)
     const clipsByStory: Record<string, { name: string; url: string; size: number }[]> = {}
     for (const row of sceneRows) {
       const sn = String(row.scene_num).padStart(2, '0')
       const path = `stories/${row.story_id}/clips/scene_${sn}.mp4`
+      const bkt = bucketForStory(storyById[row.story_id] as { gcp_credential_id?: string })
       ;(clipsByStory[row.story_id] = clipsByStory[row.story_id] || []).push({
         name: path,
-        url: `${PUBLIC_BASE}/${path}`,
+        url: bkt ? `https://storage.googleapis.com/${bkt}/${path}` : '',
         size: 0, // size not needed in list view — fetch on detail if needed
       })
     }

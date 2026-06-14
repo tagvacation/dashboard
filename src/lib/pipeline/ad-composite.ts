@@ -109,7 +109,7 @@ export async function composeAd({ storyId, scenes, endcard, productCutoutGcsUri,
     let cutoutPath: string | null = null
     if (productCutoutGcsUri) {
       cutoutPath = join(work, 'cutout.png')
-      await writeFile(cutoutPath, await downloadGsUri(productCutoutGcsUri))
+      await writeFile(cutoutPath, await downloadGsUri(productCutoutGcsUri, ctx))
     }
 
     // Narration audio.
@@ -269,7 +269,7 @@ export async function composeMascotAd({ storyId, scenes, endcard, productCutoutG
     // 2. Optional end-card (real product reveal if a cutout exists, else text-only).
     let cutoutBuf: Buffer | null = null
     if (productCutoutGcsUri) {
-      try { cutoutBuf = await downloadGsUri(productCutoutGcsUri) } catch { cutoutBuf = null }
+      try { cutoutBuf = await downloadGsUri(productCutoutGcsUri, ctx) } catch { cutoutBuf = null }
     }
     const endcardPng = join(work, 'endcard.png')
     await writeFile(endcardPng, await renderEndcard(endcard, cutoutBuf))

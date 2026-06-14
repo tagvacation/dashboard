@@ -1,4 +1,5 @@
 import postgres from 'postgres'
+import { encryptSecret, decryptSecret } from './crypto'
 
 const sql = postgres(process.env.DATABASE_URL!, {
   ssl: { rejectUnauthorized: false },
@@ -125,6 +126,9 @@ async function createTablesInner() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+  // Per-user default account (multi-tenant). user_id is added by migrate-to-multi-tenant.
+  await sql`ALTER TABLE gcp_credentials ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE`
+  await sql`ALTER TABLE gcp_credentials ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT false`
 
   // Scheduled posts — DB-backed cron queue
   await sql`
@@ -512,6 +516,7 @@ export const categoriesDb = {
 export interface GcpCredential {
   id: string; name: string; project_id: string; bucket: string
   sa_json: string; is_active: boolean; created_at: string
+  user_id?: string; is_default?: boolean
 }
 
 export const gcpCredentialsDb = {
@@ -525,16 +530,35 @@ export const gcpCredentialsDb = {
   get: async (id: string): Promise<GcpCredential | null> => {
     await ensureDb()
     const [row] = await sql<GcpCredential[]>`SELECT * FROM gcp_credentials WHERE id = ${id}`
-    return row ?? null
+    if (!row) return null
+    return { ...row, sa_json: decryptSecret(row.sa_json) }  // decrypt at read
+  },
+  // The user's chosen default account (else most-recent active). Null = user has none.
+  getDefaultForUser: async (userId: string): Promise<GcpCredential | null> => {
+    await ensureDb()
+    const [row] = await sql<GcpCredential[]>`
+      SELECT * FROM gcp_credentials
+      WHERE user_id = ${userId} AND is_active = true
+      ORDER BY is_default DESC, created_at DESC
+      LIMIT 1
+    `
+    if (!row) return null
+    return { ...row, sa_json: decryptSecret(row.sa_json) }
   },
   create: async (cred: Omit<GcpCredential, 'created_at' | 'is_active'>): Promise<void> => {
     await ensureDb()
+    const enc = encryptSecret(cred.sa_json)  // encrypt at rest
     await sql`
-      INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json)
-      VALUES (${cred.id}, ${cred.name}, ${cred.project_id}, ${cred.bucket}, ${cred.sa_json})
+      INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json, user_id, is_default)
+      VALUES (${cred.id}, ${cred.name}, ${cred.project_id}, ${cred.bucket}, ${enc}, ${cred.user_id ?? null}, ${cred.is_default ?? false})
       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, project_id = EXCLUDED.project_id,
         bucket = EXCLUDED.bucket, sa_json = EXCLUDED.sa_json
     `
+  },
+  // Mark one credential the user's default (unset their others).
+  setDefault: async (userId: string, id: string): Promise<void> => {
+    await ensureDb()
+    await sql`UPDATE gcp_credentials SET is_default = (id = ${id}) WHERE user_id = ${userId}`
   },
   delete: async (id: string): Promise<void> => {
     await ensureDb()

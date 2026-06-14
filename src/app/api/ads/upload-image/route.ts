@@ -1,23 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { Storage } from '@google-cloud/storage'
 import { requireUserId } from '@/lib/auth-server'
+import { getUserGcpContext } from '@/lib/pipeline/auth'
+import { bucketForContext } from '@/lib/gcs'
 import crypto from 'crypto'
 import sharp from 'sharp'
 
 export const dynamic = 'force-dynamic'
 export const maxDuration = 60
 
-const credentials = JSON.parse(process.env.GCS_SERVICE_ACCOUNT_JSON!)
-const storage = new Storage({ credentials })
-const bucketName = process.env.GCS_BUCKET!
-const bucket = storage.bucket(bucketName)
-
 /**
  * POST /api/ads/upload-image
  * Body: FormData with 'image' file
- * Returns: { gcsUri, publicUrl }
+ * Returns: { gcsUri, publicUrl, cutoutGcsUri }
  *
- * Image goes to gs://bucket/users/{user_id}/ad-refs/{hash}.{ext}
+ * Image goes to the USER's own bucket: gs://{their-bucket}/users/{user_id}/ad-refs/{hash}.{ext}
  */
 export async function POST(req: NextRequest) {
   let userId: string
@@ -25,6 +21,12 @@ export async function POST(req: NextRequest) {
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
   try {
+    // Resolve the user's own Cloud account (no env default).
+    let ctx
+    try { ctx = await getUserGcpContext(userId) }
+    catch { return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 }) }
+    const { bucket } = bucketForContext(ctx)
+    const bucketName = ctx.bucket
     const form = await req.formData()
     const file = form.get('image') as File | null
     if (!file) return NextResponse.json({ error: 'No image file' }, { status: 400 })

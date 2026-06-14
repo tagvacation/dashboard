@@ -11,10 +11,10 @@
  */
 
 import { Storage } from '@google-cloud/storage'
-import { pipelineDb, sceneJobsDb, storiesDb, categoriesDb, gcpCredentialsDb } from '../db'
+import { pipelineDb, sceneJobsDb, storiesDb, categoriesDb } from '../db'
 import { pickTopic, writeScript, rewriteFilteredPrompt } from './gemini'
 import { generateFullNarration } from './tts'
-import { defaultContext } from './auth'
+import { loadGcpContext } from './auth'
 import type { GcpContext } from './auth'
 import type { PipelineStep, Scene } from './types'
 
@@ -23,25 +23,7 @@ void Storage
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
-// ─── Load GCP context (env default or from DB) ────────────────────────────────
-
-async function loadGcpContext(credentialId?: string): Promise<GcpContext> {
-  // Bucket is ALWAYS the default env bucket — multiple accounts share same GCS
-  const defaultBucket = process.env.GCS_BUCKET || 'ai_clip_007'
-
-  if (!credentialId || credentialId === 'default') return defaultContext()
-  const cred = await gcpCredentialsDb.get(credentialId)
-  if (!cred) {
-    console.warn(`Credential ${credentialId} not found — using default`)
-    return defaultContext()
-  }
-  return {
-    credentials: JSON.parse(cred.sa_json),
-    projectId: cred.project_id,
-    bucket: defaultBucket,          // always same bucket regardless of account
-    region: 'us-central1',
-  }
-}
+// GcpContext is resolved per-user via loadGcpContext(credentialId) — no env default.
 
 // ─── GCS (ctx-aware) ─────────────────────────────────────────────────────────
 
@@ -173,7 +155,7 @@ async function processAllScenes(
         await log(`  ⚠ Scene ${scene.scene_num} filtered → rewriting prompt...`)
 
         try {
-          const rewrittenPrompt = await rewriteFilteredPrompt(topic, scene)
+          const rewrittenPrompt = await rewriteFilteredPrompt(ctx, topic, scene)
 
           // Create attempt 2 row
           await sceneJobsDb.create({
@@ -254,7 +236,7 @@ export async function runPipeline(storyId: string, categoryId?: string, credenti
     if (!topic) {
       await log('Picking topic...')
       await setStep('topic')
-      const result = await pickTopic(storyId, categoryOverrides.topic_picker)
+      const result = await pickTopic(ctx, storyId, categoryOverrides.topic_picker)
       topic = result.topic
       theme = result.theme
       await setStep('topic', { topic, theme })
@@ -276,7 +258,7 @@ export async function runPipeline(storyId: string, categoryId?: string, credenti
       let lastErr: Error | null = null
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-          script = await writeScript(storyId, topic, theme, categoryOverrides.script_writer)
+          script = await writeScript(ctx, storyId, topic, theme, categoryOverrides.script_writer)
           break
         } catch (e) {
           lastErr = e as Error
