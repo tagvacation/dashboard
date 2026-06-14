@@ -62,6 +62,9 @@ function CreateAdInner() {
   const [productUrl, setProductUrl] = useState('')
   const [fetchingUrl, setFetchingUrl] = useState(false)
   const [prefill, setPrefill] = useState<{ imageGcsUri?: string; cutoutGcsUri?: string } | null>(null)
+  const [candidateImages, setCandidateImages] = useState<string[]>([])
+  const [selectedImage, setSelectedImage] = useState<string>('')
+  const [importingImage, setImportingImage] = useState(false)
 
   async function fetchFromUrl() {
     if (!productUrl.trim()) return
@@ -78,12 +81,36 @@ function CreateAdInner() {
       if (d.price) setPrice(String(d.price))
       if (Array.isArray(d.benefits) && d.benefits.length) setBenefits(d.benefits.slice(0, 5))
       if (d.target_audience) setAudience(d.target_audience)
-      if (d.imagePublicUrl) setImagePreview(d.imagePublicUrl)
-      if (d.imageGcsUri) { setPrefill({ imageGcsUri: d.imageGcsUri, cutoutGcsUri: d.cutoutGcsUri }); setImageFile(null) }
+      // Show candidate images for the user to pick; auto-select the first.
+      const imgs: string[] = Array.isArray(d.images) ? d.images : []
+      setCandidateImages(imgs)
+      setPrefill(null); setImagePreview(''); setSelectedImage('')
+      if (imgs.length) pickImage(imgs[0])
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not fetch product')
     } finally {
       setFetchingUrl(false)
+    }
+  }
+
+  // Process ONE picked candidate image (download + bg-remove → user bucket).
+  async function pickImage(imageUrl: string) {
+    setSelectedImage(imageUrl)
+    setImportingImage(true); setError('')
+    try {
+      const r = await fetch('/api/ads/import-image', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Could not import image')
+      setPrefill({ imageGcsUri: d.imageGcsUri, cutoutGcsUri: d.cutoutGcsUri })
+      setImageFile(null)
+      if (d.imagePublicUrl) setImagePreview(d.imagePublicUrl)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not import image')
+    } finally {
+      setImportingImage(false)
     }
   }
 
@@ -193,6 +220,28 @@ function CreateAdInner() {
               {fetchingUrl ? 'Fetching…' : 'Fetch details'}
             </button>
           </div>
+
+          {/* Candidate product images — pick the correct one */}
+          {candidateImages.length > 0 && (
+            <div className="mt-4">
+              <p className="text-xs text-white/50 mb-2">
+                Pick the correct product image {importingImage && <span className="text-purple-300">· importing…</span>}
+              </p>
+              <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                {candidateImages.map(src => (
+                  <button key={src} type="button" onClick={() => pickImage(src)}
+                    className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all bg-white/5
+                      ${selectedImage === src ? 'border-purple-400 ring-2 ring-purple-500/30' : 'border-white/10 hover:border-white/30'}`}>
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={src} alt="" className="w-full h-full object-contain" />
+                    {selectedImage === src && (
+                      <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* 1. Product details */}
