@@ -14,9 +14,18 @@ const TONES = [
   { id: 'warm',         label: 'Warm',         desc: 'Nurturing aunty/dadi vibe' },
 ]
 const DURATIONS = [
-  { sec: 15, label: '15s', sub: '2 scenes' },
-  { sec: 30, label: '30s', sub: '4 scenes', recommended: true },
-  { sec: 60, label: '60s', sub: '8 scenes' },
+  { sec: 24, label: '24s', sub: '3 scenes' },
+  { sec: 32, label: '32s', sub: '4 scenes', recommended: true },
+  { sec: 40, label: '40s', sub: '5 scenes' },
+  { sec: 48, label: '48s', sub: '6 scenes' },
+]
+// Voice options for the spoken narration / mascot. 'auto' = AI picks per product.
+const VOICES = [
+  { id: 'auto',          label: 'Auto (AI picks)' },
+  { id: 'energetic young male, warm and confident',   label: 'Energetic male' },
+  { id: 'deep mature male, warm authoritative narrator', label: 'Deep narrator (male)' },
+  { id: 'cheerful young female, friendly and upbeat',  label: 'Cheerful female' },
+  { id: 'warm mature female, nurturing',               label: 'Warm female' },
 ]
 
 export default function CreateAdPage() {
@@ -28,9 +37,11 @@ export default function CreateAdPage() {
   const [category, setCategory] = useState(CATEGORIES[0])
   const [price, setPrice] = useState('')
   const [benefits, setBenefits] = useState(['', ''])
+  const [ingredients, setIngredients] = useState('')
   const [audience, setAudience] = useState('')
   const [tone, setTone] = useState('emotional')
-  const [duration, setDuration] = useState(30)
+  const [voice, setVoice] = useState('auto')
+  const [duration, setDuration] = useState(32)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState('')
   const [creds, setCreds] = useState<CloudCred[]>([])
@@ -122,8 +133,9 @@ export default function CreateAdPage() {
           name: name.trim(), category,
           price: price ? parseFloat(price) : undefined,
           benefits: benefits.filter(b => b.trim()),
+          ingredients: ingredients.trim() || undefined,
           target_audience: audience.trim(),
-          tone, duration_sec: duration,
+          tone, voice, duration_sec: duration,
           ad_style: adStyle,
           imageGcsUri,
           cutoutGcsUri,
@@ -243,6 +255,12 @@ export default function CreateAdPage() {
               className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
           </Field>
 
+          <Field label="Key ingredients / actives" hint="Optional — the character will name these in one scene (e.g. 'Vitamin C, Niacinamide, Salicylic Acid')">
+            <input value={ingredients} onChange={e => setIngredients(e.target.value)}
+              placeholder="e.g., 2% Salicylic Acid, Cica, Zinc"
+              className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
+          </Field>
+
           <Field label="Tone">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
               {TONES.map(t => (
@@ -258,8 +276,15 @@ export default function CreateAdPage() {
             </div>
           </Field>
 
+          <Field label="Voice" hint="Spoken narration / character voice — kept consistent across all scenes">
+            <select value={voice} onChange={e => setVoice(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
+              {VOICES.map(v => <option key={v.id} value={v.id} className="bg-black">{v.label}</option>)}
+            </select>
+          </Field>
+
           <Field label="Duration">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {DURATIONS.map(d => (
                 <button key={d.sec} type="button" onClick={() => setDuration(d.sec)}
                   className={`relative p-3 rounded-xl border-2 transition-all text-center
@@ -317,7 +342,7 @@ export default function CreateAdPage() {
             <div>
               <p className="text-sm font-semibold">☁ Bill compute to</p>
               <p className="text-xs text-white/40 mt-0.5">
-                Veo/TTS/Gemini calls run on this Cloud Account. Default = the platform&apos;s account (env).
+                Veo/TTS/Gemini/Imagen calls run on YOUR Cloud Account. Default = your default account.
               </p>
             </div>
             <Link href="/profile/accounts" className="text-xs text-purple-300 hover:text-purple-200 whitespace-nowrap transition-colors">
@@ -326,7 +351,7 @@ export default function CreateAdPage() {
           </div>
           <select value={credentialId} onChange={e => setCredentialId(e.target.value)}
             className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
-            <option value="default" className="bg-black">Default (platform account)</option>
+            <option value="default" className="bg-black">My default account</option>
             {creds.map(c => (
               <option key={c.id} value={c.id} className="bg-black">
                 {c.name} — {c.project_id}
@@ -361,7 +386,7 @@ export default function CreateAdPage() {
                 <>
                   <p className="text-sm font-semibold">Ready to generate</p>
                   <p className="text-xs text-white/40 mt-0.5">
-                    Estimated cost: <strong className="text-white/70">₹{duration === 15 ? 300 : duration === 30 ? 600 : 1200}</strong> (Veo Full) · Time: ~{duration === 15 ? 5 : duration === 30 ? 8 : 14} min
+                    Estimated cost: <strong className="text-white/70">₹{Math.round(duration / 8) * 375}</strong> (Veo Full, {Math.round(duration / 8)} scenes) · Time: ~{Math.round(duration / 8) * 2 + 2} min
                   </p>
                 </>
               ) : (

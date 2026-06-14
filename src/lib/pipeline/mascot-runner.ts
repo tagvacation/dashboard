@@ -18,9 +18,10 @@ const MASCOT_VEO_MODEL = process.env.MASCOT_VEO_MODEL || 'veo-3.1-generate-001'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 interface MascotMeta {
-  product: { name: string; category: string; price?: number; benefits: string[]; target_audience: string; tone: string; duration_sec: number }
+  product: { name: string; category: string; price?: number; benefits: string[]; ingredients?: string | null; target_audience: string; tone: string; duration_sec: number }
   imageGcsUri: string | null
   cutoutGcsUri?: string | null
+  voice?: string | null            // user-picked voice override ('auto' stored as null)
   credentialId?: string | null
 }
 
@@ -92,10 +93,11 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
       cat.prompt_script_writer,
       `Concept input:\n${JSON.stringify({
         product_name: product.name, category: product.category, benefits: product.benefits,
+        ingredients: product.ingredients || undefined,
         target_audience: product.target_audience, tone: product.tone, duration_sec: product.duration_sec, price: product.price,
         scenes_count: scenesWanted,
         ...concept,
-      }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hindi dialogue line in the consistent voice. Never render a human. Return JSON.`,
+      }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hinglish dialogue line in the consistent voice.${product.ingredients ? ' In ONE scene the mascot must name its key ingredients and the problem they fight.' : ''} Never render a human. Return JSON.`,
       ctx, 0.85, productImage,
     ) as unknown as MascotScript
     await log(`Script: "${script.ad_title_hindi}" (${script.scenes.length} scenes)`)
@@ -136,7 +138,9 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
         // fixes the male/female voice flip across independent Veo clips).
         const prefix: string[] = []
         if (script.world_description_en) prefix.push(`Setting (identical every scene for continuity): ${script.world_description_en}`)
-        if (script.voice_persona) prefix.push(`The mascot speaks in the SAME voice every scene: ${script.voice_persona}.`)
+        // User-picked voice overrides the AI's choice; else use the AI's voice_persona.
+        const voice = meta.voice || script.voice_persona
+        if (voice) prefix.push(`The mascot speaks in the SAME voice every scene: ${voice}.`)
         const villain = concept.villain_description_en as string | undefined
         if (villain) prefix.push(`Villain (render identically whenever it appears): ${villain}`)
         const vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt

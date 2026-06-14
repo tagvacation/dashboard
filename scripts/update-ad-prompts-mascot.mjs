@@ -66,6 +66,10 @@ ACTION ARC (scale across scenes_count): SCENE 1 is a punchy COLD-OPEN HOOK — g
 
 DIALOGUE: punchy, dramatic, characterful HINGLISH (natural Hindi+English code-mix, the way Indians really talk in ads — e.g. "Tan ko bolo bye-bye, glow ko bolo hello!"). Same voice every scene. The LAST scene's spoken line MUST include tagline_hinglish verbatim.
 
+PRONUNCIATION (CRITICAL for correct spoken audio): write the HINDI words in DEVANAGARI script and keep ENGLISH words in Latin — e.g. "Hairfall की छुट्टी!", "मज़बूत बाल, हमेशा". Do NOT romanize Hindi words (romanized "chhutti"/"majboot" get mis-pronounced as "chutti"/"majbot"). The line still reads as natural Hinglish, just with Hindi in Devanagari.
+
+INGREDIENTS: if the input includes "ingredients", ONE scene (best at the clash/power beat) MUST have the mascot proudly NAME its key ingredients/actives and the problem they fight — e.g. "मुझ में है [ingredient] और [ingredient], जो [problem] से लड़ें!" (keep ingredient names as given).
+
 OUTPUT JSON SCHEMA:
 {
   "ad_title_hindi": "60-95 char Hindi/Hinglish title with 1-2 emojis",

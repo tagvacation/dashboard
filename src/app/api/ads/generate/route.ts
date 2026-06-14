@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, target_audience, tone, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
+  const { name, category, price, benefits, ingredients, target_audience, tone, voice, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
   const adStyle = body.ad_style === 'mascot' ? 'mascot' : 'emotional'
   if (!name || !category || !benefits?.length || !target_audience) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
@@ -53,10 +53,11 @@ export async function POST(req: NextRequest) {
     // Store product details + image reference + cloud account in pipeline_runs.operation_ids JSON
     // (re-using existing column as flexible metadata bucket)
     const meta = {
-      product: { name, category, price, benefits, target_audience, tone, duration_sec },
+      product: { name, category, price, benefits, ingredients: ingredients || null, target_audience, tone, duration_sec },
       imageGcsUri: imageGcsUri || null,
       cutoutGcsUri: cutoutGcsUri || null,
       ad_style: adStyle,
+      voice: voice && voice !== 'auto' ? voice : null,
       credentialId: resolvedCredId,
     }
     await sql`
