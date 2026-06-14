@@ -19,10 +19,11 @@ RUN npm ci
 # process.cwd(), so the full source must be present — do not prune it.
 COPY . .
 
-# Build. Placeholder env vars only so module-load JSON.parse(GCS_SERVICE_ACCOUNT_JSON)
-# and the DB client don't crash during `next build`. REAL secrets are injected at
+# Build. Placeholder env vars only so module-load code that runs during `next build`
+# page-collection doesn't crash: JSON.parse(GCS_SERVICE_ACCOUNT_JSON), the DB client,
+# and storage.bucket(GCS_BUCKET) all need *something*. REAL secrets are injected at
 # RUNTIME by the host (Railway/Render/Fly env vars), which override these.
-RUN GCS_SERVICE_ACCOUNT_JSON='{}' DATABASE_URL='' npm run build
+RUN GCS_SERVICE_ACCOUNT_JSON='{}' GCS_BUCKET='build-placeholder' DATABASE_URL='' npm run build
 
 ENV NODE_ENV=production
 # next start honours the PORT env var the host injects (defaults to 3000).
