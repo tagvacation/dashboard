@@ -27,18 +27,19 @@ interface MascotMeta {
 interface MascotScene {
   scene_num: number
   beat: string
-  video_prompt: string      // image-to-video from mascot, includes Hindi dialogue
-  caption_hi?: string
+  action?: string           // one-line visual summary (storyboard)
+  dialogue?: string         // Hinglish spoken line (storyboard)
+  video_prompt: string      // image-to-video from mascot, includes the Hinglish dialogue
 }
 
 interface MascotScript {
   ad_title_hindi: string
-  tagline_hindi: string
+  tagline_hinglish: string
   mascot_image_prompt: string      // for Imagen
   world_description_en?: string     // shared setting injected into every scene for continuity
   voice_persona?: string            // one consistent voice injected into every scene
-  headline_hi?: string
-  cta_hi?: string
+  headline_en?: string              // ENGLISH end-card headline
+  cta_en?: string                   // ENGLISH end-card button
   scenes: MascotScene[]
   total_scenes: number
 }
@@ -185,9 +186,9 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
         const finalUrl = await composeMascotAd({
           storyId, scenes: successful,
           endcard: {
-            // No price line per feedback — clean headline + CTA over the real product.
-            headlineHi: script.headline_hi || script.tagline_hindi,
-            ctaHi: script.cta_hi || 'अभी ऑर्डर करें',
+            // English text on the end-card per feedback; no price line.
+            headlineHi: script.headline_en || 'Radiant, Protected Skin',
+            ctaHi: script.cta_en || 'Shop Now',
           },
           productCutoutGcsUri: meta.cutoutGcsUri || null,
           ctx,

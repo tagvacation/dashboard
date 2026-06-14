@@ -4,3 +4,7 @@
 node_modules/
 *.tsbuildinfo
 .data/
+
+# local media / reference artifacts — keep these on Desktop or GCS, not the repo
+*.mp4
+
