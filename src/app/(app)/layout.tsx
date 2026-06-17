@@ -8,6 +8,7 @@ const NAV_PRIMARY = [
   { href: '/',          icon: '⌂', label: 'Home',         exact: true },
   { href: '/generate',  icon: '✦', label: 'Generate' },
   { href: '/ads',       icon: '🎤', label: 'Create Ad', badge: 'NEW' },
+  { href: '/stores',    icon: '🛍', label: 'Stores' },
   { href: '/library',   icon: '▤', label: 'Library' },
   { href: '/analytics', icon: '◎', label: 'Analytics' },
 ]

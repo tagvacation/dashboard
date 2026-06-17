@@ -16,6 +16,13 @@ const FLOWS = [
     desc: 'Emotional, lifestyle b-roll with your real product composited in and a clean end-card. Best for premium, benefit-led brand ads.',
     tag: 'Realistic · real product',
   },
+  {
+    href: '/ads/new?style=model',
+    emoji: '🧍',
+    title: 'Live Model',
+    desc: 'A realistic model wearing/using your product, brought to life as a short shoppable video (silent + music). Animates a model photo, or generates one. Best for fashion & apparel.',
+    tag: 'Realistic · shoppable slider',
+  },
 ]
 
 export default function AdsChooserPage() {

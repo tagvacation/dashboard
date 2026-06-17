@@ -6,6 +6,40 @@ import { fetchWithRetry } from './fetch-retry'
 const VEO_MODEL = 'veo-3.1-lite-generate-001'
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
+/**
+ * Submit + poll a Veo clip with auto-retry. Re-submits on failure (timeout, the
+ * transient "No video in response" glitch, or a content filter) up to `attempts`
+ * times — the same prompt often succeeds on a re-roll. Returns base64 mp4 or throws.
+ */
+export async function generateVeoClip(
+  prompt: string,
+  ctx: GcpContext,
+  opts: { model?: string; imageRef?: VeoImageRef; generateAudio?: boolean; attempts?: number; pollIntervalMs?: number; maxPolls?: number } = {},
+): Promise<string> {
+  const attempts = opts.attempts ?? 3
+  const pollMs = opts.pollIntervalMs ?? 30_000
+  const maxPolls = opts.maxPolls ?? 20
+  let lastErr: unknown = new Error('Veo failed')
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const opId = await submitVeoClip(prompt, ctx, opts.model, opts.imageRef, opts.generateAudio ?? false)
+      for (let i = 0; i < maxPolls; i++) {
+        await sleep(pollMs)
+        const r = await pollVeoOperation(opId, ctx)
+        if (!r.done) continue
+        if (r.base64) return r.base64
+        // done but no video → transient glitch OR content filter; throw to trigger retry
+        throw new Error(r.error?.includes('No video') ? 'No video in response (transient)' : `CONTENT_FILTER: ${r.error || 'filtered'}`)
+      }
+      throw new Error('Veo timeout')
+    } catch (e) {
+      lastErr = e
+      if (attempt < attempts) await sleep(5_000) // brief backoff before re-roll
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+}
+
 function veoBase(ctx: GcpContext) {
   return `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${VEO_MODEL}`
 }

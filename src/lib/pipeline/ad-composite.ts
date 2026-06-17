@@ -82,6 +82,35 @@ function probeDuration(file: string): Promise<number> {
   })
 }
 
+/**
+ * Upload the master reel (high quality) AND a muted, web-optimized version for the
+ * shoppable slider / extension (≈540px wide, ~3-5 MB, no audio — sliders loop muted).
+ *   stories/{id}/final/reel.mp4          — master (high quality, ~40MB)
+ *   stories/{id}/final/reel_preview.mp4  — slider/web version (~5MB)
+ * Returns the master's public URL.
+ */
+async function uploadFinalWithPreview(ctx: GcpContext, storyId: string, finalPath: string, work: string): Promise<string> {
+  const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+  const finalGcsPath = `stories/${storyId}/final/reel.mp4`
+  await bucket.file(finalGcsPath).save(await readFile(finalPath), {
+    contentType: 'video/mp4', resumable: false, metadata: { cacheControl: 'public, max-age=3600' },
+  })
+  try {
+    const preview = join(work, 'preview.mp4')
+    await runFfmpeg([
+      '-y', '-i', finalPath,
+      '-vf', 'scale=540:-2',                  // 540px wide, keep 9:16 (even height) → crisp but small
+      '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30',
+      '-c:a', 'aac', '-b:a', '128k',          // keep audio (slider mutes via the <video> attribute)
+      '-movflags', '+faststart', preview,
+    ])
+    await bucket.file(`stories/${storyId}/final/reel_preview.mp4`).save(await readFile(preview), {
+      contentType: 'video/mp4', resumable: false, metadata: { cacheControl: 'public, max-age=300' },
+    })
+  } catch (e) { console.error('web/preview generation failed (master still uploaded):', e) }
+  return `https://storage.googleapis.com/${ctx.bucket}/${finalGcsPath}`
+}
+
 // Optional background-music bed: drop royalty-free tracks in src/assets/music/,
 // named by mood (e.g. epic.mp3, upbeat.mp3, warm.mp3, calm.mp3). The compositor
 // picks the track whose filename starts with `mood`; falls back to the first track.
@@ -216,12 +245,7 @@ export async function composeAd({ storyId, scenes, endcard, productCutoutGcsUri,
     ])
 
     // ── 5. Upload ───────────────────────────────────────────────────────────
-    const finalGcsPath = `stories/${storyId}/final/reel.mp4`
-    await bucket.file(finalGcsPath).save(await readFile(final), {
-      contentType: 'video/mp4', resumable: false,
-      metadata: { cacheControl: 'public, max-age=3600' },
-    })
-    return `https://storage.googleapis.com/${ctx.bucket}/${finalGcsPath}`
+    return await uploadFinalWithPreview(ctx, storyId, final, work)
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {})
   }
@@ -333,12 +357,85 @@ export async function composeMascotAd({ storyId, scenes, endcard, productCutoutG
       await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', concatList, '-c', 'copy', final])
     }
 
-    const finalGcsPath = `stories/${storyId}/final/reel.mp4`
-    await bucket.file(finalGcsPath).save(await readFile(final), {
-      contentType: 'video/mp4', resumable: false,
-      metadata: { cacheControl: 'public, max-age=3600' },
-    })
-    return `https://storage.googleapis.com/${ctx.bucket}/${finalGcsPath}`
+    return await uploadFinalWithPreview(ctx, storyId, final, work)
+  } finally {
+    await rm(work, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+export interface ComposeModelOpts {
+  storyId: string
+  sceneNums: string[]          // ['01','02',...] of successful clips, in order
+  music?: string | null        // mood | 'none' | null=auto
+  ctx: GcpContext
+}
+
+/**
+ * Live-Model compositor — realistic shoppable slider loop. Clips are SILENT; we
+ * normalize + grade, crossfade them, lay background music over the top, and emit
+ * the master + lightweight muted preview. No captions, no end-card.
+ */
+export async function composeModelVideo({ storyId, sceneNums, music: musicMood, ctx }: ComposeModelOpts): Promise<string> {
+  const storage = new Storage({ credentials: ctx.credentials })
+  const bucket = storage.bucket(ctx.bucket)
+  const work = join(tmpdir(), `mod-${storyId}-${Date.now()}`)
+  await mkdir(work, { recursive: true })
+
+  try {
+    // 1. Normalize each clip → graded, video-only (silent).
+    const segments: string[] = []
+    for (const sn of sceneNums) {
+      const clipLocal = join(work, `clip_${sn}.mp4`)
+      await writeFile(clipLocal, (await bucket.file(`stories/${storyId}/clips/scene_${sn}.mp4`).download())[0])
+      const proc = join(work, `proc_${sn}.mp4`)
+      // Cover-crop (fill 9:16, no black bars) rather than letterbox-pad.
+      await runFfmpeg([
+        '-y', '-i', clipLocal, '-an',
+        '-vf', `scale=${AD_W}:${AD_H}:force_original_aspect_ratio=increase,crop=${AD_W}:${AD_H},setsar=1,${GRADE}`,
+        ...VENC, '-movflags', '+faststart', proc,
+      ])
+      segments.push(proc)
+    }
+
+    // 2. Assemble with crossfades (video-only). Fallback to concat on error.
+    const joined = join(work, 'joined.mp4')
+    try {
+      const durs: number[] = []
+      for (const s of segments) durs.push(await probeDuration(s))
+      if (segments.length > 1) {
+        const T = 0.4
+        const inputs: string[] = []
+        for (const s of segments) inputs.push('-i', s)
+        const fc: string[] = []
+        let vlab = '[0:v]', acc = 0
+        for (let i = 1; i < segments.length; i++) {
+          acc += durs[i - 1]
+          const off = (acc - i * T).toFixed(3)
+          const vo = `[v${i}]`
+          fc.push(`${vlab}[${i}:v]xfade=transition=fade:duration=${T}:offset=${off}${vo}`)
+          vlab = vo
+        }
+        await runFfmpeg(['-y', ...inputs, '-filter_complex', fc.join(';'), '-map', vlab, ...VENC, '-movflags', '+faststart', joined])
+      } else {
+        await runFfmpeg(['-y', '-i', segments[0], '-c', 'copy', joined])
+      }
+    } catch {
+      const cl = join(work, 'concat.txt')
+      await writeFile(cl, segments.map(p => `file '${p}'`).join('\n'))
+      await runFfmpeg(['-y', '-f', 'concat', '-safe', '0', '-i', cl, '-c', 'copy', joined])
+    }
+
+    // 3. Lay background music over the silent video (or leave silent).
+    const final = join(work, 'final.mp4')
+    const track = findMusic(musicMood)
+    if (track) {
+      await runFfmpeg(['-y', '-i', joined, '-stream_loop', '-1', '-i', track,
+        '-map', '0:v:0', '-map', '1:a:0', '-c:v', 'copy', ...AENC, '-shortest', '-movflags', '+faststart', final])
+    } else {
+      await runFfmpeg(['-y', '-i', joined, '-c', 'copy', '-movflags', '+faststart', final])
+    }
+
+    return await uploadFinalWithPreview(ctx, storyId, final, work)
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => {})
   }

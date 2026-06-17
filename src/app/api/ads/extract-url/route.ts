@@ -34,8 +34,9 @@ export async function POST(req: NextRequest) {
     const clean = url.split('?')[0].replace(/\/$/, '')
     let title = '', description = '', priceNum: number | undefined, vendor = '', productType = ''
     let images: string[] = []
+    let handle = '', variantId = ''
 
-    // 1. Shopify deterministic path — returns ALL product images
+    // 1. Shopify deterministic path — returns ALL product images + handle + variant (for add-to-cart)
     try {
       const r = await fetch(`${clean}.json`, { headers: { 'User-Agent': 'Mozilla/5.0' } })
       if (r.ok) {
@@ -47,6 +48,8 @@ export async function POST(req: NextRequest) {
           productType = p.product_type || ''
           priceNum = p.variants?.[0]?.price ? Math.round(parseFloat(p.variants[0].price)) : undefined
           images = (p.images || []).map((im: { src: string }) => im.src).filter(Boolean)
+          handle = p.handle || clean.split('/products/')[1] || ''
+          variantId = p.variants?.[0]?.id ? String(p.variants[0].id) : ''
         }
       }
     } catch { /* not shopify */ }
@@ -87,6 +90,9 @@ export async function POST(req: NextRequest) {
       benefits,
       target_audience: (structured.target_audience as string) || '',
       images, // candidate image URLs — user picks one → /api/ads/import-image
+      product_url: clean,   // canonical URL (for the shoppable feed)
+      handle,               // Shopify product handle
+      variant_id: variantId, // Shopify variant id (for /cart/add.js)
     })
   } catch (e) {
     console.error('extract-url error:', e)

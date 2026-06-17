@@ -37,11 +37,39 @@ export async function generateMascotToGcs(
   prompt: string, ctx: GcpContext, storyId: string,
 ): Promise<{ gcsUri: string; publicUrl: string }> {
   const buf = await generateImage(prompt, ctx)
+  return uploadMascot(buf, ctx, storyId)
+}
+
+async function uploadMascot(buf: Buffer, ctx: GcpContext, storyId: string) {
   const storage = new Storage({ credentials: ctx.credentials })
   const path = `stories/${storyId}/mascot.png`
   await storage.bucket(ctx.bucket).file(path).save(buf, { contentType: 'image/png', resumable: false })
-  return {
-    gcsUri: `gs://${ctx.bucket}/${path}`,
-    publicUrl: `https://storage.googleapis.com/${ctx.bucket}/${path}`,
-  }
+  return { gcsUri: `gs://${ctx.bucket}/${path}`, publicUrl: `https://storage.googleapis.com/${ctx.bucket}/${path}` }
+}
+
+/**
+ * Image-CONDITIONED mascot: feed the REAL product photo to Gemini 2.5 Flash Image
+ * ("nano-banana") so the mascot keeps the product's exact shape, colours and label —
+ * just made cute. Far more product-faithful than text-only Imagen. Falls back to
+ * text Imagen (via the caller) if this throws.
+ */
+export async function generateMascotFromImage(
+  productImage: Buffer, mimeType: string, prompt: string, ctx: GcpContext, storyId: string,
+): Promise<{ gcsUri: string; publicUrl: string }> {
+  const token = await getAccessToken(ctx)
+  const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash-image:generateContent`
+  const res = await fetchWithRetry(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data: productImage.toString('base64') } }, { text: prompt }] }],
+      generationConfig: { responseModalities: ['IMAGE'] },
+    }),
+  }, { label: 'nano-mascot', timeoutMs: 120_000 })
+  if (!res.ok) throw new Error(`gemini-image ${res.status}: ${(await res.text()).slice(0, 160)}`)
+  const data = await res.json()
+  const parts = data.candidates?.[0]?.content?.parts || []
+  const imgPart = parts.find((p: { inlineData?: { data: string } }) => p.inlineData?.data)
+  if (!imgPart) throw new Error('gemini-image returned no image')
+  return uploadMascot(Buffer.from(imgPart.inlineData.data, 'base64'), ctx, storyId)
 }

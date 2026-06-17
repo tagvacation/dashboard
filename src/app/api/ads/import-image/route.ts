@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
   try { userId = await requireUserId() } catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
   try {
-    const { imageUrl } = await req.json()
+    const { imageUrl, fit } = await req.json()
     if (!imageUrl || !/^https?:\/\//.test(imageUrl)) return NextResponse.json({ error: 'Invalid image URL' }, { status: 400 })
 
     let ctx
@@ -31,7 +31,11 @@ export async function POST(req: NextRequest) {
     const imgRes = await fetch(imageUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } })
     if (!imgRes.ok) return NextResponse.json({ error: 'Could not download that image' }, { status: 422 })
     const orig = Buffer.from(await imgRes.arrayBuffer())
-    const buf = await sharp(orig).png({ quality: 95 }).toBuffer()
+    // For Live Model, crop the source to 9:16 so Veo doesn't bake black bars (letterbox).
+    const pipeline = fit === 'portrait916'
+      ? sharp(orig).resize(1080, 1920, { fit: 'cover', position: 'attention' })
+      : sharp(orig)
+    const buf = await pipeline.png({ quality: 95 }).toBuffer()
     const hash = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 16)
 
     const path = `users/${userId}/ad-refs/${hash}.png`

@@ -32,7 +32,7 @@ interface AdMeta {
   }
   imageGcsUri: string | null
   cutoutGcsUri?: string | null   // transparent product cutout (composited in post)
-  ad_style?: 'emotional' | 'mascot'  // emotional = hybrid b-roll; mascot = character drama
+  ad_style?: 'emotional' | 'mascot' | 'model'  // hybrid b-roll | character drama | live model
   credentialId?: string | null   // which Cloud Account to use (null = env default)
 }
 
@@ -130,10 +130,14 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     const meta = run.operation_ids as unknown as AdMeta
     if (!meta?.product) throw new Error('Product details missing in pipeline_run')
 
-    // Dispatch: mascot-drama format runs an entirely different pipeline.
+    // Dispatch: mascot-drama + live-model formats run entirely different pipelines.
     if (meta.ad_style === 'mascot') {
       const { runMascotAdPipeline } = await import('./mascot-runner')
       return runMascotAdPipeline(storyId)
+    }
+    if (meta.ad_style === 'model') {
+      const { runModelVideoPipeline } = await import('./model-runner')
+      return runModelVideoPipeline(storyId)
     }
 
     const product = meta.product

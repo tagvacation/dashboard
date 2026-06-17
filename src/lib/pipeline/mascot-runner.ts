@@ -8,14 +8,13 @@
  */
 import { sql, pipelineDb, sceneJobsDb, storiesDb } from '../db'
 import { loadGcpContext } from './auth'
-import { submitVeoClip, pollVeoOperation } from './veo'
+import { generateVeoClip } from './veo'
 import { callGemini } from './ad-runner'
-import { generateMascotToGcs } from './imagen'
+import { generateMascotToGcs, generateMascotFromImage } from './imagen'
 import { composeMascotAd, type ComposeMascotScene } from './ad-composite'
 import { downloadGsUri } from '../gcs'
 
 const MASCOT_VEO_MODEL = process.env.MASCOT_VEO_MODEL || 'veo-3.1-generate-001'
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 
 interface MascotMeta {
   product: { name: string; category: string; price?: number; benefits: string[]; ingredients?: string | null; target_audience: string; tone: string; duration_sec: number }
@@ -105,12 +104,29 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
     await pipelineDb.setStep(storyId, 'script', { script_json: JSON.stringify(script) })
     await storiesDb.update(storyId, { scenes_count: script.scenes.length, topic: `${product.name} — Mascot Ad` })
 
-    // 3. Imagen mascot character sheet
+    // 3. Mascot character sheet.
     await pipelineDb.setStep(storyId, 'audio')  // reuse step label for "asset prep"
-    await log('Generating mascot character sheet (Imagen)...')
-    const mascotPrompt = script.mascot_image_prompt || (concept.mascot_image_prompt as string)
-    if (!mascotPrompt) throw new Error('No mascot_image_prompt from Gemini')
-    const { gcsUri: mascotGcs } = await generateMascotToGcs(mascotPrompt, ctx, storyId)
+    const mascotPrompt = script.mascot_image_prompt || (concept.mascot_image_prompt as string) || ''
+    let mascotGcs: string
+    // Prefer IMAGE-CONDITIONED generation from the real product photo (keeps the
+    // product's shape, colours + label; just makes it a cute mascot). Falls back to
+    // text Imagen if no product photo or the image model fails.
+    if (meta.imageGcsUri) {
+      const personality = (concept.mascot_personality as string) || 'cheerful and friendly'
+      const editPrompt = `Turn THIS exact product into an adorable 3D cartoon mascot character. KEEP the product's real shape, proportions, colours and label text/branding intact — the mascot IS this product, just given big friendly eyes, a cute face and tiny little arms & legs. Do NOT give it a tall human body; keep the product's own silhouette and size ratio. Personality: ${personality}. Premium Pixar-style, very cute, soft glossy 3D, clean soft studio background, full body, centered, vertical 9:16.`
+      try {
+        await log('Generating mascot from product photo (image-conditioned)...')
+        const r = await generateMascotFromImage(productImage ? Buffer.from(productImage.data, 'base64') : await downloadGsUri(meta.imageGcsUri, ctx), productImage?.mimeType || 'image/png', editPrompt, ctx, storyId)
+        mascotGcs = r.gcsUri
+      } catch (e) {
+        await log(`Image-conditioned mascot failed (${e instanceof Error ? e.message : e}); falling back to text Imagen`)
+        mascotGcs = (await generateMascotToGcs(mascotPrompt || editPrompt, ctx, storyId)).gcsUri
+      }
+    } else {
+      await log('Generating mascot character sheet (Imagen, text)...')
+      if (!mascotPrompt) throw new Error('No mascot_image_prompt from Gemini')
+      mascotGcs = (await generateMascotToGcs(mascotPrompt, ctx, storyId)).gcsUri
+    }
     await log(`Mascot ready: ${mascotGcs}`)
 
     // 4. Veo per scene — image-to-video from the SAME mascot image, native dialogue
@@ -145,17 +161,11 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
         const villain = concept.villain_description_en as string | undefined
         if (villain) prefix.push(`Villain (render identically whenever it appears): ${villain}`)
         const vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt
-        const opId = await submitVeoClip(vp, ctx, MASCOT_VEO_MODEL,
-          { gcsUri: mascotGcs, mimeType: 'image/png' }, true)
-        let base64: string | undefined
-        for (let i = 0; i < 20; i++) {
-          await sleep(30_000)
-          const r = await pollVeoOperation(opId, ctx)
-          if (!r.done) continue
-          if (r.filtered) throw new Error(`CONTENT_FILTER: ${r.error}`)
-          base64 = r.base64; break
-        }
-        if (!base64) throw new Error('Veo timeout')
+        // Auto-retry (handles the transient "No video in response" glitch).
+        const base64 = await generateVeoClip(vp, ctx, {
+          model: MASCOT_VEO_MODEL, imageRef: { gcsUri: mascotGcs, mimeType: 'image/png' },
+          generateAudio: true, attempts: 3,
+        })
         const { Storage } = await import('@google-cloud/storage')
         await new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
           .file(`stories/${storyId}/clips/scene_${sn}.mp4`).save(Buffer.from(base64, 'base64'), { contentType: 'video/mp4', resumable: false })

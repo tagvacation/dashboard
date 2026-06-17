@@ -21,8 +21,12 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, credentialId } = body
-  const adStyle = body.ad_style === 'mascot' ? 'mascot' : 'emotional'
+  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, modelImages, credentialId } = body
+  const storeId = body.store_id || ''
+  const productUrl = body.product_url || ''
+  const productHandle = body.product_handle || ''
+  const variantId = body.variant_id || ''
+  const adStyle = ['mascot', 'model', 'emotional'].includes(body.ad_style) ? body.ad_style : 'emotional'
   // Resolve background-music mood: explicit pick, 'none', or 'auto' → derive from tone.
   const TONE_MOOD: Record<string, string> = { bold: 'epic', funny: 'upbeat', emotional: 'warm', warm: 'warm', informative: 'calm' }
   const musicMood = !music || music === 'auto' ? (TONE_MOOD[tone as string] || 'upbeat') : music
@@ -48,8 +52,8 @@ export async function POST(req: NextRequest) {
   try {
     // Create story + pipeline_run records — runner picks it up
     await sql`
-      INSERT INTO stories (story_id, topic, theme, status, storage_path, category_id, user_id, gcp_credential_id)
-      VALUES (${storyId}, ${`${name} — AI Ad`}, ${'ai_ad'}, ${'init'}, ${`stories/${storyId}/`}, ${'ai_ad_talking_product'}, ${userId}, ${resolvedCredId})
+      INSERT INTO stories (story_id, topic, theme, status, storage_path, category_id, user_id, gcp_credential_id, store_id, product_url, product_handle, variant_id)
+      VALUES (${storyId}, ${`${name} — AI Ad`}, ${'ai_ad'}, ${'init'}, ${`stories/${storyId}/`}, ${'ai_ad_talking_product'}, ${userId}, ${resolvedCredId}, ${storeId}, ${productUrl}, ${productHandle}, ${variantId})
     `
     await pipelineDb.create(storyId)
 
@@ -59,6 +63,7 @@ export async function POST(req: NextRequest) {
       product: { name, category, price, benefits, ingredients: ingredients || null, target_audience, tone, duration_sec },
       imageGcsUri: imageGcsUri || null,
       cutoutGcsUri: cutoutGcsUri || null,
+      modelImages: Array.isArray(modelImages) && modelImages.length ? modelImages : null,
       ad_style: adStyle,
       voice: voice && voice !== 'auto' ? voice : null,
       music: musicMood,

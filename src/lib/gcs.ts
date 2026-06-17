@@ -18,10 +18,21 @@ export function publicUrl(ctx: GcpContext, path: string): string {
 
 /** Resolve the GcpContext that owns a story (its gcp_credential_id). Throws NO_GCP_ACCOUNT. */
 export async function contextForStory(storyId: string): Promise<GcpContext> {
-  const { sql } = await import('./db')
-  const { loadGcpContext } = await import('./pipeline/auth')
-  const [row] = await sql<{ gcp_credential_id: string }[]>`SELECT gcp_credential_id FROM stories WHERE story_id = ${storyId}`
-  return loadGcpContext(row?.gcp_credential_id)
+  const { sql, gcpCredentialsDb } = await import('./db')
+  const { loadGcpContext, contextFromCredential } = await import('./pipeline/auth')
+  const [row] = await sql<{ gcp_credential_id: string | null; user_id: string | null }[]>`
+    SELECT gcp_credential_id, user_id FROM stories WHERE story_id = ${storyId}`
+  if (row?.gcp_credential_id && row.gcp_credential_id !== 'default') return loadGcpContext(row.gcp_credential_id)
+  // Older stories created before per-story credentials were recorded: fall back to the
+  // owner's default Cloud account (their assets live in that bucket) and backfill the row.
+  if (row?.user_id) {
+    const cred = await gcpCredentialsDb.getDefaultForUser(row.user_id)
+    if (cred) {
+      await sql`UPDATE stories SET gcp_credential_id = ${cred.id} WHERE story_id = ${storyId}`.catch(() => {})
+      return contextFromCredential(cred)
+    }
+  }
+  throw new Error('NO_GCP_ACCOUNT')
 }
 
 export async function listStoryFiles(storyId: string, ctx?: GcpContext) {

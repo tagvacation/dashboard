@@ -174,6 +174,23 @@ async function createTablesInner() {
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS gcp_credential_id TEXT DEFAULT ''`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS youtube_link TEXT DEFAULT ''`
   await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS final_url TEXT DEFAULT ''`
+  // Shoppable-store fields (extension feed + Shopify add-to-cart)
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS store_id TEXT DEFAULT ''`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS product_url TEXT DEFAULT ''`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS product_handle TEXT DEFAULT ''`
+  await sql`ALTER TABLE stories ADD COLUMN IF NOT EXISTS variant_id TEXT DEFAULT ''`
+
+  // Stores — group a user's product videos into a storefront (for the shoppable feed).
+  await sql`
+    CREATE TABLE IF NOT EXISTS stores (
+      id TEXT PRIMARY KEY,
+      user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      domain TEXT DEFAULT '',
+      platform TEXT DEFAULT 'shopify',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
 
   // Users — email + phone, plan/role. (Also created by migrate-to-multi-tenant; idempotent here.)
   await sql`
@@ -206,6 +223,16 @@ async function createTablesInner() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     )
   `
+
+  // ── Performance indexes (idempotent) — keep the dashboard fast as data grows ──
+  // These were previously only in scripts/add-performance-indexes.mjs (manual run);
+  // folded in here so they always exist. CREATE INDEX IF NOT EXISTS is a no-op once present.
+  await sql`CREATE INDEX IF NOT EXISTS idx_stories_user_created ON stories (user_id, created_at DESC)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_stories_user_channel ON stories (user_id, channel_id, created_at DESC)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_stories_user_store ON stories (user_id, store_id, created_at DESC)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_scene_jobs_story_status ON scene_jobs (story_id, status)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_stores_user ON stores (user_id, created_at DESC)`
+  await sql`CREATE INDEX IF NOT EXISTS idx_gcp_credentials_user ON gcp_credentials (user_id, is_active)`
 }
 
 async function createTables(): Promise<void> {
@@ -333,6 +360,21 @@ export const pipelineDb = {
 
 // ─── Stories DB ───────────────────────────────────────────────────────────────
 
+/** Trimmed row for the Library grid (storiesDb.listLite) — no heavy/unused columns. */
+export interface StoryLite {
+  story_id: string
+  topic: string
+  status: string
+  theme: string
+  category_id: string
+  created_at: string
+  youtube_link: string
+  scenes_count: number
+  store_id: string
+  final_url: string
+  has_audio: boolean
+}
+
 export interface StoryRow {
   story_id: string
   topic: string
@@ -350,6 +392,12 @@ export interface StoryRow {
   category_id: string
   channel_id: string
   gcp_credential_id: string
+  user_id?: string
+  final_url?: string
+  store_id?: string
+  product_url?: string
+  product_handle?: string
+  variant_id?: string
 }
 
 export const storiesDb = {
@@ -380,6 +428,23 @@ export const storiesDb = {
       return sql<StoryRow[]>`SELECT * FROM stories WHERE channel_id = ${channelId} ORDER BY created_at DESC`
     }
     return sql<StoryRow[]>`SELECT * FROM stories ORDER BY created_at DESC`
+  },
+
+  // Lightweight list for the Library grid: only the columns the grid needs (no SELECT *),
+  // with an optional store filter. Keeps the list query small + index-friendly.
+  listLite: async (userId: string, opts?: { storeId?: string; channelId?: string }): Promise<StoryLite[]> => {
+    await ensureDb()
+    const storeId = opts?.storeId
+    const channelId = opts?.channelId
+    const cols = sql`story_id, topic, status, theme, category_id, created_at, youtube_link,
+      scenes_count, store_id, final_url, (audio_url <> '') AS has_audio`
+    if (storeId) {
+      return sql<StoryLite[]>`SELECT ${cols} FROM stories WHERE user_id = ${userId} AND store_id = ${storeId} ORDER BY created_at DESC`
+    }
+    if (channelId) {
+      return sql<StoryLite[]>`SELECT ${cols} FROM stories WHERE user_id = ${userId} AND channel_id = ${channelId} ORDER BY created_at DESC`
+    }
+    return sql<StoryLite[]>`SELECT ${cols} FROM stories WHERE user_id = ${userId} ORDER BY created_at DESC`
   },
 
   update: async (storyId: string, updates: Partial<Omit<StoryRow, 'story_id' | 'created_at'>>): Promise<void> => {
@@ -618,6 +683,41 @@ export const scheduledPostsDb = {
   delete: async (id: number): Promise<void> => {
     await ensureDb()
     await sql`DELETE FROM scheduled_posts WHERE id = ${id}`
+  },
+}
+
+// ─── Stores (shoppable feed) ──────────────────────────────────────────────────
+
+export interface Store { id: string; user_id: string; name: string; domain: string; platform: string; created_at: string }
+
+export const storesDb = {
+  getAll: async (userId: string): Promise<Store[]> => {
+    await ensureDb()
+    return sql<Store[]>`SELECT * FROM stores WHERE user_id = ${userId} ORDER BY created_at DESC`
+  },
+  get: async (id: string): Promise<Store | null> => {
+    await ensureDb()
+    const [row] = await sql<Store[]>`SELECT * FROM stores WHERE id = ${id}`
+    return row ?? null
+  },
+  create: async (s: { id: string; user_id: string; name: string; domain?: string; platform?: string }): Promise<void> => {
+    await ensureDb()
+    await sql`
+      INSERT INTO stores (id, user_id, name, domain, platform)
+      VALUES (${s.id}, ${s.user_id}, ${s.name}, ${s.domain ?? ''}, ${s.platform ?? 'shopify'})
+      ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, domain = EXCLUDED.domain, platform = EXCLUDED.platform
+    `
+  },
+  // Rows needed to build the shoppable feed (only finished videos with a product URL).
+  feedRows: async (storeId: string, userId: string) => {
+    await ensureDb()
+    return sql<{ story_id: string; topic: string; product_url: string; product_handle: string; variant_id: string; final_url: string }[]>`
+      SELECT story_id, topic, product_url, product_handle, variant_id, final_url
+      FROM stories
+      WHERE store_id = ${storeId} AND user_id = ${userId}
+        AND status = 'post_produced' AND product_url <> '' AND final_url <> ''
+      ORDER BY created_at DESC
+    `
   },
 }
 

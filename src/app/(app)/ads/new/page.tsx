@@ -40,7 +40,8 @@ const MUSIC = [
 function CreateAdInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const styleParam = searchParams.get('style') === 'emotional' ? 'emotional' : 'mascot'
+  const sp = searchParams.get('style') || ''
+  const styleParam: 'mascot' | 'emotional' | 'model' = sp === 'emotional' ? 'emotional' : sp === 'model' ? 'model' : 'mascot'
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -58,13 +59,19 @@ function CreateAdInner() {
   const [imagePreview, setImagePreview] = useState('')
   const [creds, setCreds] = useState<CloudCred[]>([])
   const [credentialId, setCredentialId] = useState<string>('default')
-  const [adStyle] = useState<'mascot' | 'emotional'>(styleParam)
+  const [stores, setStores] = useState<{ id: string; name: string }[]>([])
+  const [storeId, setStoreId] = useState<string>('')
+  // Captured from URL import — needed for the shoppable feed + Shopify add-to-cart.
+  const [cartMeta, setCartMeta] = useState<{ product_url?: string; handle?: string; variant_id?: string }>({})
+  const [adStyle] = useState<'mascot' | 'emotional' | 'model'>(styleParam)
   const [productUrl, setProductUrl] = useState('')
   const [fetchingUrl, setFetchingUrl] = useState(false)
   const [prefill, setPrefill] = useState<{ imageGcsUri?: string; cutoutGcsUri?: string } | null>(null)
   const [candidateImages, setCandidateImages] = useState<string[]>([])
   const [selectedImage, setSelectedImage] = useState<string>('')
   const [importingImage, setImportingImage] = useState(false)
+  // Live Model can use MULTIPLE angles (e.g. front + back of a garment).
+  const [modelPicks, setModelPicks] = useState<{ src: string; imageGcsUri: string }[]>([])
 
   async function fetchFromUrl() {
     if (!productUrl.trim()) return
@@ -81,11 +88,13 @@ function CreateAdInner() {
       if (d.price) setPrice(String(d.price))
       if (Array.isArray(d.benefits) && d.benefits.length) setBenefits(d.benefits.slice(0, 5))
       if (d.target_audience) setAudience(d.target_audience)
+      // Capture cart/feed data (product URL, Shopify handle + variant for add-to-cart).
+      setCartMeta({ product_url: d.product_url || productUrl.trim(), handle: d.handle, variant_id: d.variant_id })
       // Show candidate images for the user to pick; auto-select the first.
       const imgs: string[] = Array.isArray(d.images) ? d.images : []
       setCandidateImages(imgs)
-      setPrefill(null); setImagePreview(''); setSelectedImage('')
-      if (imgs.length) pickImage(imgs[0])
+      setPrefill(null); setImagePreview(''); setSelectedImage(''); setModelPicks([])
+      if (imgs.length) { adStyle === 'model' ? toggleModelImage(imgs[0]) : pickImage(imgs[0]) }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not fetch product')
     } finally {
@@ -114,10 +123,34 @@ function CreateAdInner() {
     }
   }
 
+  // Live Model: toggle an angle in/out of the selection (front, back, side…).
+  async function toggleModelImage(imageUrl: string) {
+    if (modelPicks.some(p => p.src === imageUrl)) {
+      setModelPicks(ps => ps.filter(p => p.src !== imageUrl)); return
+    }
+    setImportingImage(true); setError('')
+    try {
+      const r = await fetch('/api/ads/import-image', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageUrl, fit: 'portrait916' }), // crop to 9:16 so Veo doesn't letterbox
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Could not import image')
+      setModelPicks(ps => [...ps, { src: imageUrl, imageGcsUri: d.imageGcsUri }])
+      setImageFile(null)
+      if (d.imagePublicUrl) setImagePreview(d.imagePublicUrl)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not import image')
+    } finally {
+      setImportingImage(false)
+    }
+  }
+
   useEffect(() => {
     fetch('/api/credentials').then(r => r.json()).then(d => {
       setCreds(d.credentials || [])
     }).catch(() => {})
+    fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || [])).catch(() => {})
   }, [])
 
   const onImageSelect = useCallback((file: File) => {
@@ -165,6 +198,10 @@ function CreateAdInner() {
         cutoutGcsUri = prefill.cutoutGcsUri
       }
 
+      // Live Model can use multiple angles (front/back). First doubles as grounding image.
+      const modelImages = adStyle === 'model' ? modelPicks.map(p => p.imageGcsUri) : undefined
+      if (modelImages?.length && !imageGcsUri) imageGcsUri = modelImages[0]
+
       const res = await fetch('/api/ads/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -178,7 +215,12 @@ function CreateAdInner() {
           ad_style: adStyle,
           imageGcsUri,
           cutoutGcsUri,
+          modelImages,
           credentialId: credentialId === 'default' ? null : credentialId,
+          store_id: storeId || undefined,
+          product_url: cartMeta.product_url || productUrl.trim() || undefined,
+          product_handle: cartMeta.handle || undefined,
+          variant_id: cartMeta.variant_id || undefined,
         }),
       })
       const data = await res.json()
@@ -197,9 +239,9 @@ function CreateAdInner() {
       <div className="mb-8">
         <Link href="/ads" className="text-xs text-white/40 hover:text-white/70 transition-colors">← Ad formats</Link>
         <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-purple-500/20 border border-purple-500/30 rounded-full text-xs font-semibold text-purple-300 mb-3 mt-3">
-          {adStyle === 'mascot' ? '🦸 Mascot Drama' : '✨ Product Story'}
+          {adStyle === 'mascot' ? '🦸 Mascot Drama' : adStyle === 'model' ? '🧍 Live Model' : '✨ Product Story'}
         </div>
-        <h1 className="text-3xl font-bold tracking-tight">{adStyle === 'mascot' ? 'Create a Mascot Ad' : 'Create a Product Ad'}</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{adStyle === 'mascot' ? 'Create a Mascot Ad' : adStyle === 'model' ? 'Create a Live-Model Video' : 'Create a Product Ad'}</h1>
         <p className="mt-1.5 text-sm text-white/40">Tell us about your product — we&apos;ll generate a Hindi ad in a few minutes.</p>
       </div>
 
@@ -221,27 +263,45 @@ function CreateAdInner() {
             </button>
           </div>
 
-          {/* Candidate product images — pick the correct one */}
+          {/* Candidate images — single pick for product/mascot, MULTI pick for live model */}
           {candidateImages.length > 0 && (
             <div className="mt-4">
               <p className="text-xs text-white/50 mb-2">
-                Pick the correct product image {importingImage && <span className="text-purple-300">· importing…</span>}
+                {adStyle === 'model'
+                  ? 'Pick the model angles to use (e.g. front + back of the garment)'
+                  : 'Pick the correct product image'}
+                {importingImage && <span className="text-purple-300"> · importing…</span>}
               </p>
               <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
-                {candidateImages.map(src => (
-                  <button key={src} type="button" onClick={() => pickImage(src)}
-                    className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all bg-white/5
-                      ${selectedImage === src ? 'border-purple-400 ring-2 ring-purple-500/30' : 'border-white/10 hover:border-white/30'}`}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={src} alt="" className="w-full h-full object-contain" />
-                    {selectedImage === src && (
-                      <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>
-                    )}
-                  </button>
-                ))}
+                {candidateImages.map(src => {
+                  const sel = adStyle === 'model' ? modelPicks.some(p => p.src === src) : selectedImage === src
+                  return (
+                    <button key={src} type="button"
+                      onClick={() => adStyle === 'model' ? toggleModelImage(src) : pickImage(src)}
+                      className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all bg-white/5
+                        ${sel ? 'border-purple-400 ring-2 ring-purple-500/30' : 'border-white/10 hover:border-white/30'}`}>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={src} alt="" className="w-full h-full object-contain" />
+                      {sel && (
+                        <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>
+                      )}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
+
+          {/* Store — groups this video into a storefront for the shoppable feed */}
+          <div className="mt-4 flex items-center gap-2">
+            <span className="text-xs text-white/50 whitespace-nowrap">Store:</span>
+            <select value={storeId} onChange={e => setStoreId(e.target.value)}
+              className="flex-1 px-3 py-2 bg-black/40 border border-white/10 rounded-lg text-sm focus:outline-none focus:border-purple-400">
+              <option value="" className="bg-black">None</option>
+              {stores.map(s => <option key={s.id} value={s.id} className="bg-black">{s.name}</option>)}
+            </select>
+            <a href="/stores" className="text-xs text-purple-300 hover:text-purple-200 whitespace-nowrap">Manage stores →</a>
+          </div>
         </div>
 
         {/* 1. Product details */}
@@ -300,35 +360,42 @@ function CreateAdInner() {
               className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
           </Field>
 
-          <Field label="Key ingredients / actives" hint="Optional — the character will name these in one scene (e.g. 'Vitamin C, Niacinamide, Salicylic Acid')">
-            <input value={ingredients} onChange={e => setIngredients(e.target.value)}
-              placeholder="e.g., 2% Salicylic Acid, Cica, Zinc"
-              className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
-          </Field>
+          {/* Dialogue-only fields — hidden for Live Model (it's silent). */}
+          {adStyle !== 'model' && (
+            <Field label="Key ingredients / actives" hint="Optional — the character will name these in one scene (e.g. 'Vitamin C, Niacinamide, Salicylic Acid')">
+              <input value={ingredients} onChange={e => setIngredients(e.target.value)}
+                placeholder="e.g., 2% Salicylic Acid, Cica, Zinc"
+                className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm placeholder-white/30 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all" />
+            </Field>
+          )}
 
-          <Field label="Tone">
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-              {TONES.map(t => (
-                <button key={t.id} type="button" onClick={() => setTone(t.id)}
-                  className={`p-3 rounded-xl border-2 text-left transition-all
-                    ${tone === t.id
-                      ? 'border-purple-500 bg-purple-500/10'
-                      : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'}`}>
-                  <p className={`text-sm font-semibold ${tone === t.id ? 'text-purple-300' : 'text-white/80'}`}>{t.label}</p>
-                  <p className="text-xs text-white/40 mt-0.5 leading-snug">{t.desc}</p>
-                </button>
-              ))}
-            </div>
-          </Field>
+          {adStyle !== 'model' && (
+            <Field label="Tone">
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                {TONES.map(t => (
+                  <button key={t.id} type="button" onClick={() => setTone(t.id)}
+                    className={`p-3 rounded-xl border-2 text-left transition-all
+                      ${tone === t.id
+                        ? 'border-purple-500 bg-purple-500/10'
+                        : 'border-white/10 bg-white/[0.02] hover:bg-white/[0.04]'}`}>
+                    <p className={`text-sm font-semibold ${tone === t.id ? 'text-purple-300' : 'text-white/80'}`}>{t.label}</p>
+                    <p className="text-xs text-white/40 mt-0.5 leading-snug">{t.desc}</p>
+                  </button>
+                ))}
+              </div>
+            </Field>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field label="Voice" hint="Spoken voice — consistent across all scenes">
-              <select value={voice} onChange={e => setVoice(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
-                {VOICES.map(v => <option key={v.id} value={v.id} className="bg-black">{v.label}</option>)}
-              </select>
-            </Field>
-            <Field label="Background music" hint="Mixed under the dialogue">
+            {adStyle !== 'model' && (
+              <Field label="Voice" hint="Spoken voice — consistent across all scenes">
+                <select value={voice} onChange={e => setVoice(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
+                  {VOICES.map(v => <option key={v.id} value={v.id} className="bg-black">{v.label}</option>)}
+                </select>
+              </Field>
+            )}
+            <Field label="Background music" hint={adStyle === 'model' ? 'Plays under the silent video' : 'Mixed under the dialogue'}>
               <select value={music} onChange={e => setMusic(e.target.value)}
                 className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
                 {MUSIC.map(m => <option key={m.id} value={m.id} className="bg-black">{m.label}</option>)}

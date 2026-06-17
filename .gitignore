@@ -8,3 +8,6 @@ node_modules/
 # local media / reference artifacts — keep these on Desktop or GCS, not the repo
 *.mp4
 
+# browser extension (local testing tool, kept out of the app repo)
+extension/
+
