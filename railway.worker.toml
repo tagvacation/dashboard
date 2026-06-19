@@ -1,0 +1,18 @@
+# Railway config for the WORKER service ONLY (your "dashboard Copy").
+#
+# Point ONLY the worker service at this file:
+#   Worker service → Settings → Config-as-code → File path: railway.worker.toml
+#
+# Do NOT use this file for the web service — it would make the web run the worker loop
+# instead of `next start`. The web service keeps the Dockerfile's default CMD (`npm run start`).
+#
+# This pins the worker's start command + restart policy in code so a redeploy can't reset it.
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "npm run worker"
+restartPolicyType = "always"
+numReplicas = 1
