@@ -30,7 +30,7 @@ const STATUS_LABEL: Record<string, { label: string; color: string }> = {
   failed:        { label: 'Failed',            color: 'bg-red-500/20 text-red-300 border-red-500/30' },
 }
 
-const POLL_STATUSES = new Set(['init','topic','script','audio','veo_submit','veo_poll','generating'])
+const POLL_STATUSES = new Set(['queued','claimed','init','topic','script','audio','veo_submit','veo_poll','generating'])
 
 const GEN_STEPS = ['Concept', 'Script', 'Assets', 'Scenes', 'Compose']
 function genStep(runStatus: string, storyStatus: string, log: string[]): number {

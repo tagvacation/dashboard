@@ -24,7 +24,7 @@ const STATUS_LABEL: Record<string, { label: string; color: string; bar: string }
   generating:    { label: 'Generating',       color: 'bg-amber-500/20 text-amber-300 border-amber-500/30',       bar: 'bg-amber-400' },
   failed:        { label: 'Failed',           color: 'bg-red-500/20 text-red-300 border-red-500/30',             bar: 'bg-red-400' },
 }
-const GENERATING = new Set(['generating', 'init', 'topic', 'script', 'audio', 'veo_submit', 'veo_poll'])
+const GENERATING = new Set(['queued', 'claimed', 'generating', 'init', 'topic', 'script', 'audio', 'veo_submit', 'veo_poll'])
 
 export default function LibraryPage() {
   const [stories, setStories] = useState<Story[]>([])

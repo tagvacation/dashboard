@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { pipelineDb } from '@/lib/db'
-import { runPipeline } from '@/lib/pipeline/runner'
+import { runOrEnqueue } from '@/lib/pipeline/queue'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,7 +21,8 @@ export async function POST(req: NextRequest) {
   const storyId = generateStoryId()
   await pipelineDb.create(storyId)
 
-  runPipeline(storyId, categoryId, credentialId).catch(async (err) => {
+  // Queue for the worker (USE_WORKER=1) or run inline (local/dev).
+  runOrEnqueue(storyId, 'story', { categoryId, credentialId }).catch(async (err) => {
     console.error(`Pipeline ${storyId} crashed:`, err)
     try { await pipelineDb.setStep(storyId, 'failed', { error: String(err) }) } catch { /* ignore */ }
   })

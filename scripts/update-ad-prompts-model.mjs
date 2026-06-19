@@ -21,13 +21,15 @@ You receive product details and (usually) a real product image. If the image alr
 Return ONLY JSON:
 {
   "concept": "1 line describing the vibe/setting (e.g. 'sunlit minimalist studio, effortless turn')",
-  "model_image_prompt": "ENGLISH Imagen prompt for a PHOTOREALISTIC human model naturally wearing/using the product, flattering framing, clean premium setting, soft natural lighting, vertical 9:16, no text/watermark. Reflect the product's REAL colours and type. 50-80 words. (Used ONLY when no model photo is available.)",
+  "model_image_prompt": "ENGLISH Imagen prompt for a PHOTOREALISTIC human model gracefully wearing/using the product, fully and modestly dressed. Frame as a MEDIUM or MEDIUM-WIDE shot (roughly knee-up to full-body) — the ENTIRE head is visible with clear headroom above it and generous empty margin on all four sides, the model centered, so the frame can be re-cropped to other sizes without ever cutting the face. The outfit is draped neatly and elegantly, styled the way it is meant to be worn. Clean premium setting, soft natural lighting, vertical 9:16, no text/watermark. Reflect the product's REAL colours and type. 60-90 words. (Used ONLY when no model photo is available.)",
   "setting_en": "20-40 words: the consistent setting + lighting/mood used in EVERY scene",
   "scenes_count": 4
 }
 
 RULES:
 - Realistic, premium, tasteful — like a high-end e-commerce video. NOT cartoon, NOT a mascot.
+- FRAMING: medium / medium-wide shots with the whole head + headroom and safe margins around the model; avoid tight close-ups that risk cropping the face. The model must never touch the frame edge.
+- WARDROBE: the model is fully and modestly dressed; the outfit and product are draped neatly and elegantly, styled the way they are meant to be worn, and kept consistent.
 - No on-screen text or logos. No exaggerated or fast motion.
 - Everything derives from THIS product. No real celebrities, no other brands.`
 
@@ -42,9 +44,11 @@ SCENE ARC (tasteful variations that SHOW the product): e.g. a slow graceful turn
 VEO video_prompt RULES (CRITICAL):
 - Photorealistic, cinematic, soft natural lighting; the SAME model; SUBTLE realistic motion only (slow turn, a step, a small gesture, a soft smile, hair/fabric movement).
 - The product must be clearly visible on/with the model in every scene.
+- FRAMING (CRITICAL): keep the model's ENTIRE head and face IN FRAME at all times with clear headroom above the head; use MEDIUM / MEDIUM-WIDE framing (roughly waist-up to full-body) and keep the model centered with safe margin on all sides, so the shot can be re-cropped to other aspect ratios (1:1, 4:5, 16:9) without ever cutting the face or head. Do NOT use extreme close-ups; the face must stay fully within the frame (only a deliberate, tasteful beauty close-up may go tighter, and even then keep the full face in frame).
+- WARDROBE & PRODUCT CONTINUITY: the model stays fully and modestly dressed; keep the SAME outfit and the SAME neat, elegant draping/styling as the reference in EVERY scene — consistent jewellery, fabric folds and product placement, so the look is identical scene to scene. The motion is gentle and graceful and keeps the styling tidy throughout.
 - OPEN each video_prompt by re-establishing setting_en (same place, lighting, mood) for continuity; tasteful, uncluttered background.
-- HARD NEGATIVES: NO on-screen text, letters, numbers, logos, captions, UI; NO talking/dialogue (silent); NO fast or violent motion; avoid distorted hands.
-- Vertical 9:16, 50-90 words, each scene a distinct shot.
+- HARD NEGATIVES: NO on-screen text, letters, numbers, logos, captions, UI; NO talking/dialogue (silent); NO fast or violent motion; avoid distorted hands; the outfit stays the same and tidy across scenes; keep the model's head/face fully within the frame.
+- Vertical 9:16, 60-100 words, each scene a distinct shot.
 
 OUTPUT JSON SCHEMA:
 {
@@ -60,6 +64,8 @@ OUTPUT JSON SCHEMA:
 
 CHECKLIST:
 - EXACTLY scenes_count scenes; same model every scene; subtle realistic motion; product visible.
+- whole head + face in frame with headroom and safe margins; medium/medium-wide framing.
+- model fully and modestly dressed; outfit & product styled neatly and kept consistent across scenes.
 - silent (no dialogue), no text/logos in frame.`
 
 const STYLE = 'Photorealistic premium e-commerce model video, soft natural lighting, shallow depth of field, vertical 9:16.'

@@ -388,10 +388,18 @@ export async function composeModelVideo({ storyId, sceneNums, music: musicMood, 
       const clipLocal = join(work, `clip_${sn}.mp4`)
       await writeFile(clipLocal, (await bucket.file(`stories/${storyId}/clips/scene_${sn}.mp4`).download())[0])
       const proc = join(work, `proc_${sn}.mp4`)
-      // Cover-crop (fill 9:16, no black bars) rather than letterbox-pad.
+      // CONTAIN (never crop the model) + blurred-fill background instead of cover-crop,
+      // so the model/face is never cut and the clip survives reframing to other sizes.
+      // The foreground is fit fully inside the frame; a zoomed, blurred copy fills any gaps
+      // (no black bars). When the source is already 9:16 the foreground fills it exactly.
       await runFfmpeg([
         '-y', '-i', clipLocal, '-an',
-        '-vf', `scale=${AD_W}:${AD_H}:force_original_aspect_ratio=increase,crop=${AD_W}:${AD_H},setsar=1,${GRADE}`,
+        '-filter_complex',
+        `[0:v]split=2[b][f];` +
+        `[b]scale=${AD_W}:${AD_H}:force_original_aspect_ratio=increase,crop=${AD_W}:${AD_H},boxblur=24:2,eq=brightness=-0.06[bg];` +
+        `[f]scale=${AD_W}:${AD_H}:force_original_aspect_ratio=decrease[fg];` +
+        `[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,${GRADE}[v]`,
+        '-map', '[v]',
         ...VENC, '-movflags', '+faststart', proc,
       ])
       segments.push(proc)

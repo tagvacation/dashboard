@@ -233,6 +233,11 @@ async function createTablesInner() {
   await sql`CREATE INDEX IF NOT EXISTS idx_scene_jobs_story_status ON scene_jobs (story_id, status)`
   await sql`CREATE INDEX IF NOT EXISTS idx_stores_user ON stores (user_id, created_at DESC)`
   await sql`CREATE INDEX IF NOT EXISTS idx_gcp_credentials_user ON gcp_credentials (user_id, is_active)`
+
+  // Worker queue: job_type marks which runner handles a queued job; partial index keeps the
+  // worker's "next queued job" poll instant. (status='queued' is set by the enqueue layer.)
+  await sql`ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS job_type TEXT DEFAULT ''`
+  await sql`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_queued ON pipeline_runs (created_at) WHERE status = 'queued'`
 }
 
 async function createTables(): Promise<void> {

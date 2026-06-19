@@ -97,7 +97,7 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
         target_audience: product.target_audience, tone: product.tone, duration_sec: product.duration_sec, price: product.price,
         scenes_count: scenesWanted,
         ...concept,
-      }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hinglish dialogue line in the consistent voice.${product.ingredients ? ' In ONE scene the mascot must name its key ingredients and the problem they fight.' : ''} Never render a human. Return JSON.`,
+      }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hinglish dialogue line in the consistent voice. When the villain appears, VARY where it enters each scene (never always from directly behind the mascot).${product.ingredients ? ' In ONE scene the mascot must name its key ingredients and the problem they fight.' : ''} Never render a human. Return JSON.`,
       ctx, 0.85, productImage,
     ) as unknown as MascotScript
     await log(`Script: "${script.ad_title_hindi}" (${script.scenes.length} scenes)`)

@@ -77,21 +77,14 @@ export async function POST(req: NextRequest) {
     `
     await sql`UPDATE pipeline_runs SET user_id = ${userId} WHERE story_id = ${storyId}`
 
-    // Trigger background generation by calling pipeline runner.
-    // Fire-and-forget — UI polls /api/pipeline/{id} for progress.
-    triggerGeneration(storyId).catch(e => {
-      console.error(`[ads] Generation trigger failed for ${storyId}:`, e)
-    })
+    // Queue for the worker (USE_WORKER=1) so heavy work runs off the web process; otherwise
+    // run inline (local/dev) — same behaviour as before. Returns fast either way; UI polls.
+    const { runOrEnqueue } = await import('@/lib/pipeline/queue')
+    await runOrEnqueue(storyId, 'ad')
 
     return NextResponse.json({ story_id: storyId })
   } catch (e) {
     console.error('Ad generate error:', e)
     return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 })
   }
-}
-
-// Dynamically import runner so this route doesn't block on its bundle.
-async function triggerGeneration(storyId: string) {
-  const { runAdPipeline } = await import('@/lib/pipeline/ad-runner')
-  await runAdPipeline(storyId)
 }

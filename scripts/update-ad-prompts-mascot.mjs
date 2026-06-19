@@ -56,7 +56,7 @@ ACTION ARC (scale across scenes_count): SCENE 1 is a punchy COLD-OPEN HOOK — g
 ═══ VEO video_prompt RULES (CRITICAL) ═══
 - HIGH-ENERGY ACTION in EVERY scene: the mascot leaps, dashes, dodges, unleashes its signature power; dramatic FAST camera moves, slow-motion impacts, explosions of light and particles, debris, shockwaves, dynamic angles. AVOID static talking-head shots — the dialogue happens DURING the action.
 - CAMERA: give EACH scene a DISTINCT camera move (e.g. fast push-in, low-angle hero shot, sweeping orbit, crane up, whip-pan, dramatic dolly) — never repeat the same framing twice in a row.
-- VILLAIN: when the villain appears, render it EXACTLY as villain_description_en every time — keep it visually identical across scenes.
+- VILLAIN: when the villain appears, render it EXACTLY as villain_description_en every time — visually identical across scenes. But VARY how and from where it ENTERS each scene — erupting from the ground, descending from the sky, swirling in as a storm, creeping out of the shadows, looming on the horizon, or sliding in from the side — NEVER always from directly behind the mascot; change its direction, distance and scale scene to scene.
 - EVERY scene set in the SAME world: OPEN each video_prompt by re-establishing world_description_en (same place, same lighting and mood). The background must be RICH and detailed — NEVER plain or empty.
 - Animate the SAME mascot; refer to it as "the [product] mascot". Use ONLY its signature power from the concept (no new/unrelated props, no hardcoded items).
 - The mascot speaks ONE short HINGLISH line in the SAME voice_persona every scene — put the spoken line in double quotes and restate the voice (gender/age/energy) so it stays consistent.

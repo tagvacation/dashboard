@@ -106,48 +106,69 @@ export async function runModelVideoPipeline(storyId: string): Promise<void> {
       })
     }
 
+    // Run all scenes against a given set of base image(s), concurrency-limited.
     const MAX = 2
-    let active = 0
-    const queue: (() => void)[] = []
-    const acquire = () => new Promise<void>(res => { if (active < MAX) { active++; res() } else queue.push(() => { active++; res() }) })
-    const release = () => { active--; const n = queue.shift(); if (n) n() }
+    type SceneRes = { sn: string; ok: boolean; filtered: boolean }
+    const runScenes = async (imgs: string[]): Promise<SceneRes[]> => {
+      let active = 0
+      const queue: (() => void)[] = []
+      const acquire = () => new Promise<void>(res => { if (active < MAX) { active++; res() } else queue.push(() => { active++; res() }) })
+      const release = () => { active--; const n = queue.shift(); if (n) n() }
+      const settled = await Promise.allSettled(script.scenes.map(async (scene, idx): Promise<SceneRes> => {
+        await acquire()
+        const sn = String(scene.scene_num).padStart(2, '0')
+        const baseImg = imgs[idx % imgs.length]
+        try {
+          await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
+          const base64 = await generateVeoClip(scene.video_prompt, ctx, {
+            model: MODEL_VEO_MODEL, imageRef: { gcsUri: baseImg, mimeType: mimeFor(baseImg) },
+            generateAudio: false, attempts: 3,
+          })
+          const { Storage } = await import('@google-cloud/storage')
+          await new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+            .file(`stories/${storyId}/clips/scene_${sn}.mp4`).save(Buffer.from(base64, 'base64'), { contentType: 'video/mp4', resumable: false })
+          await sceneJobsDb.update(storyId, sn, 1, { status: 'done' })
+          await log(`  ✓ Scene ${sn}`)
+          release(); return { sn, ok: true, filtered: false }
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e)
+          const filtered = err.startsWith('CONTENT_FILTER:')
+          await sceneJobsDb.update(storyId, sn, 1, { status: filtered ? 'filtered' : 'failed', error_message: err })
+          await log(`  ✗ Scene ${sn}: ${err.slice(0, 100)}`)
+          release(); return { sn, ok: false, filtered }
+        }
+      }))
+      return settled.map(r => r.status === 'fulfilled' ? r.value : { sn: '??', ok: false, filtered: false })
+    }
 
-    const results = await Promise.allSettled(script.scenes.map(async (scene, idx) => {
-      await acquire()
-      const sn = String(scene.scene_num).padStart(2, '0')
-      // Rotate through the provided angles so e.g. the back image drives a back-showing scene.
-      const baseImg = baseImages[idx % baseImages.length]
-      try {
-        await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
-        // Auto-retry (handles the transient "No video in response" glitch). Silent clip.
-        const base64 = await generateVeoClip(scene.video_prompt, ctx, {
-          model: MODEL_VEO_MODEL, imageRef: { gcsUri: baseImg, mimeType: mimeFor(baseImg) },
-          generateAudio: false, attempts: 3,
-        })
-        const { Storage } = await import('@google-cloud/storage')
-        await new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
-          .file(`stories/${storyId}/clips/scene_${sn}.mp4`).save(Buffer.from(base64, 'base64'), { contentType: 'video/mp4', resumable: false })
-        await sceneJobsDb.update(storyId, sn, 1, { status: 'done' })
-        await log(`  ✓ Scene ${sn}`)
-        release(); return { sn, ok: true }
-      } catch (e) {
-        const err = e instanceof Error ? e.message : String(e)
-        await sceneJobsDb.update(storyId, sn, 1, { status: err.startsWith('CONTENT_FILTER:') ? 'filtered' : 'failed', error_message: err })
-        await log(`  ✗ Scene ${sn}: ${err.slice(0, 100)}`)
-        release(); return { sn, ok: false }
+    let results = await runScenes(baseImages)
+    let done = results.filter(r => r.ok).length
+    let usedAiFallback = false
+
+    // Recovery: Veo's face-safety filter rejects SOME specific real photos (image-specific —
+    // proven via veo-doctor: the same code/account passes other photos). If the uploaded photo
+    // produced ZERO clips because Veo filtered it, generate an AI model and retry once so the
+    // run still yields a video. (No extra cost on the happy path — only when 0 scenes succeed.)
+    const fromUserPhoto = !!(meta.modelImages?.length || meta.imageGcsUri)
+    if (done === 0 && fromUserPhoto && results.some(r => r.filtered)) {
+      const fbPrompt = script.model_image_prompt || (concept.model_image_prompt as string) || ''
+      if (fbPrompt) {
+        await log('Uploaded photo was rejected by Veo (face safety) — generating an AI model and retrying...')
+        try {
+          const { gcsUri } = await generateMascotToGcs(fbPrompt, ctx, storyId)
+          await log(`AI model ready: ${gcsUri.split('/').pop()} — re-running scenes`)
+          results = await runScenes([gcsUri])
+          done = results.filter(r => r.ok).length
+          usedAiFallback = true
+        } catch (e) { await log(`AI-model fallback failed: ${e instanceof Error ? e.message : e}`) }
       }
-    }))
+    }
 
-    const sceneNums: string[] = []
-    script.scenes.forEach((scene, i) => {
-      const r = results[i]
-      if (r.status === 'fulfilled' && r.value.ok) sceneNums.push(String(scene.scene_num).padStart(2, '0'))
-    })
-    const done = sceneNums.length
+    const sceneNums = results.filter(r => r.ok).map(r => r.sn)
     await storiesDb.update(storyId, {
       status: done > 0 ? 'clips_ready' : 'failed',
       clips_generated_at: new Date().toISOString(), scenes_count: done,
-      notes: results.length - done > 0 ? `${results.length - done} scene(s) failed` : '',
+      notes: results.length - done > 0 ? `${results.length - done} scene(s) failed` : (usedAiFallback ? 'Used an AI-generated model (uploaded photo was rejected by Veo).' : ''),
     })
     await log(`Veo: ${done}/${script.scenes.length} scenes done`)
 
