@@ -3,13 +3,6 @@ import Link from 'next/link'
 
 const FLOWS = [
   {
-    href: '/ads/new?style=auto',
-    emoji: '✨',
-    title: 'Smart Ad — AI Director',
-    desc: 'Just give the product. Our AI ad director analyzes it and picks the best format, voice and music for you — no settings to fiddle with. Recommended.',
-    tag: 'Recommended · AI decides everything',
-  },
-  {
     href: '/ads/new?style=mascot',
     emoji: '🦸',
     title: 'Mascot Drama',
@@ -29,13 +22,6 @@ const FLOWS = [
     title: 'Live Model',
     desc: 'A realistic model wearing/using your product, brought to life as a short shoppable video (silent + music). Animates a model photo, or generates one. Best for fashion & apparel.',
     tag: 'Realistic · shoppable slider',
-  },
-  {
-    href: '/ads/new?style=broll',
-    emoji: '🎞',
-    title: 'Product B-roll',
-    desc: 'Cinematic atmosphere footage — ingredient splashes, textures, falling petals, molecular reveals, mood shots (silent + music). Best for perfume, skincare & premium brand films.',
-    tag: 'Cinematic · ingredients & mood',
   },
 ]
 
