@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
   const productUrl = body.product_url || ''
   const productHandle = body.product_handle || ''
   const variantId = body.variant_id || ''
-  const adStyle = ['mascot', 'model', 'emotional'].includes(body.ad_style) ? body.ad_style : 'emotional'
+  const adStyle = ['mascot', 'model', 'emotional', 'broll'].includes(body.ad_style) ? body.ad_style : 'emotional'
   // Resolve background-music mood: explicit pick, 'none', or 'auto' → derive from tone.
   const TONE_MOOD: Record<string, string> = { bold: 'epic', funny: 'upbeat', emotional: 'warm', warm: 'warm', informative: 'calm' }
   const musicMood = !music || music === 'auto' ? (TONE_MOOD[tone as string] || 'upbeat') : music

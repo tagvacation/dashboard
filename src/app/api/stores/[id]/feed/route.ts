@@ -22,7 +22,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     product_url: r.product_url,
     handle: r.product_handle || undefined,
     variant_id: r.variant_id || undefined,
-    title: r.topic?.replace(/ — (AI Ad|Mascot Ad|Live Model)$/, '') || '',
+    title: r.topic?.replace(/ — (AI Ad|Mascot Ad|Live Model|Product B-roll)$/, '') || '',
     video_url: r.final_url.replace('/reel.mp4', '/reel_preview.mp4'), // small web version
     master_url: r.final_url,
   }))

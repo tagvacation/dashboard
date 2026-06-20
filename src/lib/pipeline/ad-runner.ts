@@ -32,7 +32,7 @@ interface AdMeta {
   }
   imageGcsUri: string | null
   cutoutGcsUri?: string | null   // transparent product cutout (composited in post)
-  ad_style?: 'emotional' | 'mascot' | 'model'  // hybrid b-roll | character drama | live model
+  ad_style?: 'emotional' | 'mascot' | 'model' | 'broll'  // hybrid | character drama | live model | cinematic b-roll
   credentialId?: string | null   // which Cloud Account to use (null = env default)
 }
 
@@ -138,6 +138,10 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     if (meta.ad_style === 'model') {
       const { runModelVideoPipeline } = await import('./model-runner')
       return runModelVideoPipeline(storyId)
+    }
+    if (meta.ad_style === 'broll') {
+      const { runBrollAdPipeline } = await import('./broll-runner')
+      return runBrollAdPipeline(storyId)
     }
 
     const product = meta.product
