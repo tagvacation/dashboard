@@ -41,8 +41,10 @@ function CreateAdInner() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const sp = searchParams.get('style') || ''
-  const styleParam: 'mascot' | 'emotional' | 'model' | 'broll' =
-    sp === 'emotional' ? 'emotional' : sp === 'model' ? 'model' : sp === 'broll' ? 'broll' : 'mascot'
+  const styleParam: 'mascot' | 'emotional' | 'model' | 'broll' | 'auto' =
+    sp === 'emotional' ? 'emotional' : sp === 'model' ? 'model' : sp === 'broll' ? 'broll' : sp === 'auto' ? 'auto' : 'mascot'
+  // Smart mode: the AI director picks format + voice + music, so we hide those controls.
+  const aiDecides = styleParam === 'auto'
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -64,7 +66,7 @@ function CreateAdInner() {
   const [storeId, setStoreId] = useState<string>('')
   // Captured from URL import — needed for the shoppable feed + Shopify add-to-cart.
   const [cartMeta, setCartMeta] = useState<{ product_url?: string; handle?: string; variant_id?: string }>({})
-  const [adStyle] = useState<'mascot' | 'emotional' | 'model' | 'broll'>(styleParam)
+  const [adStyle] = useState<'mascot' | 'emotional' | 'model' | 'broll' | 'auto'>(styleParam)
   // Silent formats (music only, no spoken voice).
   const isSilent = styleParam === 'model' || styleParam === 'broll'
   const [productUrl, setProductUrl] = useState('')
@@ -242,9 +244,10 @@ function CreateAdInner() {
       <div className="mb-8">
         <Link href="/ads" className="text-xs text-white/40 hover:text-white/70 transition-colors">← Ad formats</Link>
         <div className="inline-flex items-center gap-2 px-2.5 py-1 bg-purple-500/20 border border-purple-500/30 rounded-full text-xs font-semibold text-purple-300 mb-3 mt-3">
-          {adStyle === 'mascot' ? '🦸 Mascot Drama' : adStyle === 'model' ? '🧍 Live Model' : adStyle === 'broll' ? '🎞 Product B-roll' : '✨ Product Story'}
+          {aiDecides ? '✨ Smart Ad — AI Director' : adStyle === 'mascot' ? '🦸 Mascot Drama' : adStyle === 'model' ? '🧍 Live Model' : adStyle === 'broll' ? '🎞 Product B-roll' : '✨ Product Story'}
         </div>
-        <h1 className="text-3xl font-bold tracking-tight">{adStyle === 'mascot' ? 'Create a Mascot Ad' : adStyle === 'model' ? 'Create a Live-Model Video' : adStyle === 'broll' ? 'Create a Product B-roll' : 'Create a Product Ad'}</h1>
+        <h1 className="text-3xl font-bold tracking-tight">{aiDecides ? 'Create a Smart Ad' : adStyle === 'mascot' ? 'Create a Mascot Ad' : adStyle === 'model' ? 'Create a Live-Model Video' : adStyle === 'broll' ? 'Create a Product B-roll' : 'Create a Product Ad'}</h1>
+        {aiDecides && <p className="mt-1.5 text-xs text-purple-300/80">Our AI director will pick the format, voice and music from your product — just fill the basics below.</p>}
         <p className="mt-1.5 text-sm text-white/40">Tell us about your product — we&apos;ll generate a Hindi ad in a few minutes.</p>
       </div>
 
@@ -372,7 +375,7 @@ function CreateAdInner() {
             </Field>
           )}
 
-          {adStyle !== 'model' && (
+          {!aiDecides && adStyle !== 'model' && (
             <Field label="Tone">
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
                 {TONES.map(t => (
@@ -390,7 +393,7 @@ function CreateAdInner() {
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {!isSilent && (
+            {!isSilent && !aiDecides && (
               <Field label="Voice" hint="Spoken voice — consistent across all scenes">
                 <select value={voice} onChange={e => setVoice(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
@@ -398,12 +401,14 @@ function CreateAdInner() {
                 </select>
               </Field>
             )}
-            <Field label="Background music" hint={isSilent ? 'Plays under the silent video' : 'Mixed under the dialogue'}>
-              <select value={music} onChange={e => setMusic(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
-                {MUSIC.map(m => <option key={m.id} value={m.id} className="bg-black">{m.label}</option>)}
-              </select>
-            </Field>
+            {!aiDecides && (
+              <Field label="Background music" hint={isSilent ? 'Plays under the silent video' : 'Mixed under the dialogue'}>
+                <select value={music} onChange={e => setMusic(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
+                  {MUSIC.map(m => <option key={m.id} value={m.id} className="bg-black">{m.label}</option>)}
+                </select>
+              </Field>
+            )}
           </div>
 
           <Field label="Duration">

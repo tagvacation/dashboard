@@ -3,6 +3,13 @@ import Link from 'next/link'
 
 const FLOWS = [
   {
+    href: '/ads/new?style=auto',
+    emoji: '✨',
+    title: 'Smart Ad — AI Director',
+    desc: 'Just give the product. Our AI ad director analyzes it and picks the best format, voice and music for you — no settings to fiddle with. Recommended.',
+    tag: 'Recommended · AI decides everything',
+  },
+  {
     href: '/ads/new?style=mascot',
     emoji: '🦸',
     title: 'Mascot Drama',

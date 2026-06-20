@@ -32,7 +32,9 @@ interface AdMeta {
   }
   imageGcsUri: string | null
   cutoutGcsUri?: string | null   // transparent product cutout (composited in post)
-  ad_style?: 'emotional' | 'mascot' | 'model' | 'broll'  // hybrid | character drama | live model | cinematic b-roll
+  ad_style?: 'emotional' | 'mascot' | 'model' | 'broll' | 'auto'  // 'auto' = let the AI director decide
+  voice?: string | null
+  music?: string | null
   credentialId?: string | null   // which Cloud Account to use (null = env default)
 }
 
@@ -130,7 +132,32 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     const meta = run.operation_ids as unknown as AdMeta
     if (!meta?.product) throw new Error('Product details missing in pipeline_run')
 
-    // Dispatch: mascot-drama + live-model formats run entirely different pipelines.
+    // AI Creative Director: when the merchant chose "Smart" (ad_style 'auto' / unset), decide
+    // the format + voice + music from the product (vision), persist, then dispatch. The merchant
+    // never has to pick — the director makes the calls a non-expert can't.
+    if (!meta.ad_style || meta.ad_style === 'auto') {
+      await pipelineDb.setStep(storyId, 'topic')
+      await log('AI director analysing the product...')
+      const ctxD = await loadGcpContext(meta.credentialId)
+      let dImg: { data: string; mimeType: string } | undefined
+      if (meta.imageGcsUri) {
+        try {
+          const b = await downloadGsUri(meta.imageGcsUri, ctxD)
+          const mt = meta.imageGcsUri.endsWith('.jpg') || meta.imageGcsUri.endsWith('.jpeg') ? 'image/jpeg' : meta.imageGcsUri.endsWith('.webp') ? 'image/webp' : 'image/png'
+          dImg = { data: b.toString('base64'), mimeType: mt }
+        } catch { /* director still works from text */ }
+      }
+      const { runDirector } = await import('./director')
+      const brief = await runDirector(meta.product, ctxD, dImg)
+      // Smart mode: the merchant delegated these — the director's calls win.
+      meta.ad_style = brief.ad_format
+      if (brief.voice) meta.voice = brief.voice
+      meta.music = brief.music_mood
+      await sql`UPDATE pipeline_runs SET operation_ids = ${sql.json(JSON.parse(JSON.stringify(meta)))} WHERE story_id = ${storyId}`
+      await log(`Director → ${brief.ad_format} · voice: ${brief.voice || '(silent)'} · music: ${brief.music_mood}${brief.rationale ? ' — ' + brief.rationale : ''}`)
+    }
+
+    // Dispatch: mascot-drama + live-model + b-roll formats run entirely different pipelines.
     if (meta.ad_style === 'mascot') {
       const { runMascotAdPipeline } = await import('./mascot-runner')
       return runMascotAdPipeline(storyId)
