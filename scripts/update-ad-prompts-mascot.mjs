@@ -31,7 +31,7 @@ Return ONLY JSON:
   "ad_concept": "1-2 line Hindi description of the dramatic story",
   "mascot_personality": "2-4 words",
   "voice_persona": "ONE consistent voice: gender + age + energy (e.g. 'energetic young male, warm confident')",
-  "mascot_image_prompt": "ENGLISH Imagen prompt: the product personified as a premium Pixar-style 3D character that KEEPS the product's real silhouette (a bottle stays bottle-shaped) with a cute expressive face and tiny stubby limbs — NOT a humanoid, NO human torso or legs. Its signature power visible, set IN the vivid relevant WORLD with a rich detailed background, dramatic cinematic lighting, depth of field, FULL vertical 9:16 portrait, centered with headroom. Capture the product's REAL colours and branding. 60-90 words. Striking and memorable.",
+  "mascot_image_prompt": "ENGLISH Imagen prompt: the product personified as a premium Pixar-style 3D hero, full body, dynamic confident pose, expressive distinctive face, its signature power visible, standing IN the vivid relevant WORLD with a rich detailed background, dramatic cinematic lighting, depth of field, vertical 9:16. Capture the product's REAL colours and branding. 60-90 words. Make it striking and memorable.",
   "villain_description_en": "30-50 words: menacing villain look, colours, expression, vibe",
   "world_description_en": "30-50 words: the vivid, RELEVANT setting + dramatic lighting and mood — present in EVERY scene",
   "tagline_hinglish": "punchy 4-8 word HINGLISH spoken catchphrase (natural Hindi+English mix, the way Indians actually talk)",
@@ -54,15 +54,14 @@ You receive product details + concept (mascot_image_prompt, mascot_personality, 
 ACTION ARC (scale across scenes_count): SCENE 1 is a punchy COLD-OPEN HOOK — grab attention in the first 1-2 seconds with immediate drama (a sudden threat, a dramatic entrance, a dynamic reveal) before anything calm. Then: the villain strikes and threatens the world → escalating CLASHES, each bigger than the last → a turning point → an EPIC victory + the CTA line. Raise the stakes every scene.
 
 ═══ VEO video_prompt RULES (CRITICAL) ═══
-- HIGH-ENERGY ACTION in EVERY scene, but the mascot moves AS THE PRODUCT ITSELF — it floats, hovers, glides, zips, spins, bobs and hops; its signature power bursts FROM the product (its cap, nozzle, surface or glow), NOT from human arms. It NEVER runs, leaps or poses like a person and NEVER grows a human body. Dramatic FAST camera moves, slow-motion impacts, explosions of light and particles, debris, shockwaves, dynamic angles. AVOID static talking-head shots — the dialogue happens DURING the action.
-- THE MASCOT KEEPS THE PRODUCT'S SHAPE in every scene (a bottle stays bottle-shaped, a tube stays tube-shaped) with at most a cute face + tiny stubby limbs — it must NOT morph into a humanoid, superhero, or person at any moment.
+- HIGH-ENERGY ACTION in EVERY scene: the mascot leaps, dashes, dodges, unleashes its signature power; dramatic FAST camera moves, slow-motion impacts, explosions of light and particles, debris, shockwaves, dynamic angles. AVOID static talking-head shots — the dialogue happens DURING the action.
 - CAMERA: give EACH scene a DISTINCT camera move (e.g. fast push-in, low-angle hero shot, sweeping orbit, crane up, whip-pan, dramatic dolly) — never repeat the same framing twice in a row.
 - VILLAIN: when the villain appears, render it EXACTLY as villain_description_en every time — keep it visually identical across scenes.
 - EVERY scene set in the SAME world: OPEN each video_prompt by re-establishing world_description_en (same place, same lighting and mood). The background must be RICH and detailed — NEVER plain or empty.
 - Animate the SAME mascot; refer to it as "the [product] mascot". Use ONLY its signature power from the concept (no new/unrelated props, no hardcoded items).
 - The mascot speaks ONE short HINGLISH line in the SAME voice_persona every scene — put the spoken line in double quotes and restate the voice (gender/age/energy) so it stays consistent.
 - Premium Pixar-quality 3D animation, detailed environment, cinematic dramatic lighting, depth of field, vertical 9:16. 60-110 words. Each scene a DISTINCT shot/angle.
-- HARD NEGATIVES: NEVER a real human / human superhero / person; the mascot NEVER becomes a humanoid (no human torso, no human legs, no muscular/superhero body) — it stays the product's own shape throughout. No on-screen text, letters, numbers, logos, captions, or UI in frame. Only the mascot speaks (the villain may roar/growl wordlessly).
+- HARD NEGATIVES: NEVER a real human / human superhero / person. No on-screen text, letters, numbers, logos, captions, or UI in frame. Only the mascot speaks (the villain may roar/growl wordlessly).
 - Cartoon-safe defeat ONLY — villain is "washed away", "dissolved into sparkles", "shrinks and pops", "scattered by light". Never use violence words (hit, attack, blast, smash, kill, punch).
 
 DIALOGUE: punchy, dramatic, characterful HINGLISH (natural Hindi+English code-mix, the way Indians really talk in ads — e.g. "Tan ko bolo bye-bye, glow ko bolo hello!"). Same voice every scene. The LAST scene's spoken line MUST include tagline_hinglish verbatim.

@@ -3,34 +3,9 @@
  * that keeps the product-hero consistent across Veo scenes (image-to-video).
  */
 import { Storage } from '@google-cloud/storage'
-import sharp from 'sharp'
 import { getAccessToken } from './auth'
 import type { GcpContext } from './auth'
 import { fetchWithRetry } from './fetch-retry'
-
-const MASCOT_W = 1080, MASCOT_H = 1920  // 9:16 — Veo image-to-video expects this aspect
-
-/**
- * Force any mascot image to a clean 9:16 frame. nano-banana inherits the product photo's
- * aspect (often square), and Veo then boxes a square reference inside 9:16 → the framing
- * defect. We fit the mascot fully (no crop) over a soft blurred fill of itself (no hard bars).
- */
-async function normalizeTo916(buf: Buffer): Promise<Buffer> {
-  const m = await sharp(buf).metadata()
-  if (m.width && m.height && Math.abs(m.width / m.height - MASCOT_W / MASCOT_H) < 0.02) {
-    return sharp(buf).resize(MASCOT_W, MASCOT_H, { fit: 'cover' }).png().toBuffer()
-  }
-  const bg = await sharp(buf).resize(MASCOT_W, MASCOT_H, { fit: 'cover' }).blur(40).modulate({ brightness: 0.9 }).toBuffer()
-  const fg = await sharp(buf).resize(MASCOT_W, MASCOT_H, { fit: 'inside' }).toBuffer()
-  return sharp(bg).composite([{ input: fg, gravity: 'center' }]).png().toBuffer()
-}
-
-/** Pad a product photo onto a 9:16 white canvas so nano-banana composes a vertical scene. */
-async function padInputTo916(buf: Buffer): Promise<Buffer> {
-  return sharp(buf)
-    .resize(MASCOT_W, MASCOT_H, { fit: 'contain', background: { r: 255, g: 255, b: 255, alpha: 1 } })
-    .png().toBuffer()
-}
 
 // Try newest → oldest; availability varies by project.
 const IMAGEN_MODELS = ['imagen-4.0-generate-001', 'imagen-3.0-generate-002', 'imagegeneration@006']
@@ -83,14 +58,11 @@ export async function generateMascotFromImage(
 ): Promise<{ gcsUri: string; publicUrl: string }> {
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash-image:generateContent`
-  // Pad the product onto a 9:16 canvas so nano-banana composes a VERTICAL scene (it tends to
-  // match the input aspect — a square product photo otherwise yields a square mascot).
-  const paddedInput = await padInputTo916(productImage).catch(() => productImage)
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ inlineData: { mimeType: 'image/png', data: paddedInput.toString('base64') } }, { text: prompt }] }],
+      contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data: productImage.toString('base64') } }, { text: prompt }] }],
       generationConfig: { responseModalities: ['IMAGE'] },
     }),
   }, { label: 'nano-mascot', timeoutMs: 120_000 })
@@ -99,7 +71,5 @@ export async function generateMascotFromImage(
   const parts = data.candidates?.[0]?.content?.parts || []
   const imgPart = parts.find((p: { inlineData?: { data: string } }) => p.inlineData?.data)
   if (!imgPart) throw new Error('gemini-image returned no image')
-  // Guarantee a clean 9:16 reference for Veo regardless of what nano-banana returned.
-  const normalized = await normalizeTo916(Buffer.from(imgPart.inlineData.data, 'base64'))
-  return uploadMascot(normalized, ctx, storyId)
+  return uploadMascot(Buffer.from(imgPart.inlineData.data, 'base64'), ctx, storyId)
 }
