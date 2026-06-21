@@ -60,15 +60,18 @@ export async function POST(req: NextRequest) {
       title = (html.match(/<meta property="og:title" content="([^"]+)"/)?.[1] || html.match(/<title>([^<]+)<\/title>/)?.[1] || '').trim()
       description = stripHtml(html.match(/<meta name="description" content="([^"]+)"/)?.[1] || '').slice(0, 1500)
       const og = html.match(/<meta property="og:image" content="([^"]+)"/)?.[1]
-      const imgSrcs = [...html.matchAll(/<img[^>]+src=["']([^"']+)["']/gi)].map(m => m[1])
-        .filter(s => /^https?:|^\/\//.test(s) && /\.(jpe?g|png|webp)/i.test(s))
-      images = [...new Set([og, ...imgSrcs].filter(Boolean) as string[])].slice(0, 12)
+      // Catch normal src AND lazy-loaded images (data-src / srcset) so we don't miss most of them.
+      const imgSrcs = [
+        ...[...html.matchAll(/<img[^>]+(?:src|data-src|data-original)=["']([^"']+)["']/gi)].map(m => m[1]),
+        ...[...html.matchAll(/(?:srcset|data-srcset)=["']([^"']+)["']/gi)].flatMap(m => m[1].split(',').map(s => s.trim().split(/\s+/)[0])),
+      ].filter(s => /^https?:|^\/\//.test(s) && /\.(jpe?g|png|webp)/i.test(s))
+      images = [...new Set([og, ...imgSrcs].filter(Boolean) as string[])].slice(0, 24)
       const pm = html.match(/"price"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/)
       if (pm) priceNum = Math.round(parseFloat(pm[1]))
     }
 
     if (!title) return NextResponse.json({ error: 'Could not read this product page' }, { status: 422 })
-    images = [...new Set(images.map(normUrl))].slice(0, 12)
+    images = [...new Set(images.map(normUrl))].slice(0, 24)
 
     // 3. Gemini structures the marketing fields (on the user's GCP project)
     let structured: Record<string, unknown> = {}

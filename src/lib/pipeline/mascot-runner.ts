@@ -13,6 +13,8 @@ import { callGemini } from './ad-runner'
 import { generateMascotToGcs, generateMascotFromImage } from './imagen'
 import { composeMascotAd, type ComposeMascotScene } from './ad-composite'
 import { downloadGsUri } from '../gcs'
+import { loadRecentForbidden, CLICHE_FORBIDDEN } from './critics'
+import { runScriptLoop } from './script-loop'
 
 const MASCOT_VEO_MODEL = process.env.MASCOT_VEO_MODEL || 'veo-3.1-generate-001'
 
@@ -22,6 +24,8 @@ interface MascotMeta {
   cutoutGcsUri?: string | null
   voice?: string | null            // user-picked voice override ('auto' stored as null)
   music?: string | null            // background-music mood ('none' | mood | null=auto)
+  reuseScript?: boolean            // approved draft → render the stored concept/script verbatim
+  draftConcept?: Record<string, unknown>  // concept captured at draft time (villain, voice, etc.)
   credentialId?: string | null
 }
 
@@ -75,34 +79,80 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
     `
     if (!cat) throw new Error('ai_ad_mascot_drama category not found — run scripts/update-ad-prompts-mascot.mjs')
 
+    // Approved draft → render the EXACT previewed concept/script (skip regeneration).
+    let concept: Record<string, unknown>
+    let script: MascotScript
+    if (meta.reuseScript && run.script_json && meta.draftConcept) {
+      await pipelineDb.setStep(storyId, 'script')
+      await log('Approved draft — rendering the previewed story (skipping concept/script regeneration)')
+      concept = meta.draftConcept
+      script = JSON.parse(run.script_json) as MascotScript
+      await storiesDb.update(storyId, { scenes_count: script.scenes.length, topic: `${product.name} — Mascot Ad` })
+    } else {
     // 1. Concept
     await pipelineDb.setStep(storyId, 'topic')
     await log('Designing mascot + villain + story...')
-    const concept = await callGemini(
+    concept = await callGemini(
       cat.prompt_topic_picker,
       `Product details:\n${JSON.stringify(product, null, 2)}\n\nThe attached image (if any) is the REAL product. Invent the mascot hero + villain + story. Return JSON only.`,
       ctx, 0.95, productImage,
     )
     await log(`Mascot: ${(concept.mascot_image_prompt as string)?.slice(0, 80)}`)
 
-    // 2. Script — scene count scales with requested duration (8s per scene)
+    // 2. Script + multi-critic loop — scene count scales with requested duration (8s per scene)
     await pipelineDb.setStep(storyId, 'script')
     const scenesWanted = Math.min(8, Math.max(3, Math.round((product.duration_sec || 32) / 8)))
     await log(`Writing ${scenesWanted} action scenes + dialogue...`)
-    const script = await callGemini(
-      cat.prompt_script_writer,
-      `Concept input:\n${JSON.stringify({
-        product_name: product.name, category: product.category, benefits: product.benefits,
-        ingredients: product.ingredients || undefined,
-        target_audience: product.target_audience, tone: product.tone, duration_sec: product.duration_sec, price: product.price,
-        scenes_count: scenesWanted,
-        ...concept,
-      }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hinglish dialogue line in the consistent voice. When the villain appears, VARY where it enters each scene (never always from directly behind the mascot).${product.ingredients ? ' In ONE scene the mascot must name its key ingredients and the problem they fight.' : ''} Never render a human. Return JSON.`,
-      ctx, 0.85, productImage,
-    ) as unknown as MascotScript
-    await log(`Script: "${script.ad_title_hindi}" (${script.scenes.length} scenes)`)
+
+    // Build the "do not reuse" lists: hardcoded clichés + this user's past 5 runs
+    const userId = (run as unknown as { user_id?: string }).user_id || null
+    const recent = userId
+      ? await loadRecentForbidden(userId).catch(() => ({ settings: [] as string[], villains: [] as string[], mascots: [] as string[] }))
+      : { settings: [], villains: [], mascots: [] }
+    const forbidden = {
+      settings: [...recent.settings, ...CLICHE_FORBIDDEN.settings],
+      villains: recent.villains,
+      mascots: recent.mascots,
+    }
+    if (recent.settings.length) await log(`Diversity: avoiding ${recent.settings.length} setting(s) from your last 5 runs`)
+
+    const baseInput = {
+      product_name: product.name, category: product.category, benefits: product.benefits,
+      ingredients: product.ingredients || undefined,
+      target_audience: product.target_audience, tone: product.tone, duration_sec: product.duration_sec, price: product.price,
+      scenes_count: scenesWanted,
+      ...concept,
+    }
+    const baseTask = `Produce EXACTLY ${scenesWanted} action scenes. Every video_prompt is high-action, animates the SAME mascot (image-to-video) in the SAME world, and includes one short Hinglish dialogue line in the consistent voice. When the villain appears, VARY where it enters each scene (never always from directly behind the mascot).${product.ingredients ? ' In ONE scene the mascot must name its key ingredients and the problem they fight.' : ''} Never render a human.
+
+FRAMING PER SCENE (mandatory — bad framing makes the ad look cheap):
+- Each video_prompt MUST specify: shot type (close-up | medium | wide), camera angle (low-hero | high | OTS | dutch), camera move (push-in | pan | tilt | static | handheld), and subject scale ("mascot fills 60-80% of vertical frame", never "centered alone with empty space").
+- VARY framing across scenes — don't repeat the same shot type twice in a row.
+
+FORBIDDEN SETTINGS (do not use these — recently overused by this merchant + globally banned):
+${forbidden.settings.length ? forbidden.settings.map(s => '  - ' + s).join('\n') : '  (none)'}
+FORBIDDEN VERBS/PHRASES:
+${CLICHE_FORBIDDEN.verbs_and_phrases.map(s => '  - ' + s).join('\n')}
+FORBIDDEN STRUCTURE: villain-enters → mascot-defends → villain-intensifies → mascot-counters. Invent a different beat sequence.`
+
+    const initialUser = `Concept input:\n${JSON.stringify(baseInput, null, 2)}\n\n${baseTask}\n\nReturn JSON.`
+
+    const loopResult = await runScriptLoop<MascotScript>({
+      initialGenerate: async () => await callGemini(cat.prompt_script_writer, initialUser, ctx, 0.85, productImage) as unknown as MascotScript,
+      reviseGenerate: async (notes, prev) => {
+        const revUser = `Concept input:\n${JSON.stringify(baseInput, null, 2)}\n\n${baseTask}\n\nPREVIOUS DRAFT (revise this, don't start from scratch):\n${JSON.stringify(prev, null, 2)}\n\n${notes}\n\nReturn the FULL revised JSON.`
+        return await callGemini(cat.prompt_script_writer, revUser, ctx, 0.7, productImage) as unknown as MascotScript
+      },
+      product: baseInput as unknown as Record<string, unknown>,
+      forbidden,
+      ctx,
+      log,
+    })
+    script = loopResult.script
+    await log(`Script: "${script.ad_title_hindi}" (${script.scenes.length} scenes, ${loopResult.passes} pass${loopResult.passes > 1 ? 'es' : ''})`)
     await pipelineDb.setStep(storyId, 'script', { script_json: JSON.stringify(script) })
     await storiesDb.update(storyId, { scenes_count: script.scenes.length, topic: `${product.name} — Mascot Ad` })
+    }
 
     // 3. Mascot character sheet.
     await pipelineDb.setStep(storyId, 'audio')  // reuse step label for "asset prep"
@@ -113,7 +163,16 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
     // text Imagen if no product photo or the image model fails.
     if (meta.imageGcsUri) {
       const personality = (concept.mascot_personality as string) || 'cheerful and friendly'
-      const editPrompt = `Turn THIS exact product into an adorable 3D cartoon mascot character. KEEP the product's real shape, proportions, colours and label text/branding intact — the mascot IS this product, just given big friendly eyes, a cute face and tiny little arms & legs. Do NOT give it a tall human body; keep the product's own silhouette and size ratio. Personality: ${personality}. Premium Pixar-style, very cute, soft glossy 3D, clean soft studio background, full body, centered, vertical 9:16.`
+      const editPrompt = `Turn THIS exact product into an adorable 3D cartoon mascot character. KEEP the product's real shape, proportions, colours and label text/branding intact — the mascot IS this product, just given big friendly eyes, a cute face and tiny little arms & legs. Do NOT give it a tall human body; keep the product's own silhouette and size ratio. Personality: ${personality}.
+
+FRAMING (critical — fills the 9:16 frame, no cheap empty space):
+- LOW HERO ANGLE looking slightly up at the mascot
+- Mascot occupies 70-80% of the vertical frame height — from approx 10% top to 90% bottom
+- Slight perspective foreshortening to feel imposing
+- NO large empty space above the head; NO large empty floor below the feet
+- Tight composition: the mascot dominates the frame
+
+Premium Pixar-style, very cute, soft glossy 3D rendering with cinematic key light + rim light, shallow depth of field, vibrant product-brand colours as the dominant palette, clean soft studio gradient background. Vertical 9:16.`
       try {
         await log('Generating mascot from product photo (image-conditioned)...')
         const r = await generateMascotFromImage(productImage ? Buffer.from(productImage.data, 'base64') : await downloadGsUri(meta.imageGcsUri, ctx), productImage?.mimeType || 'image/png', editPrompt, ctx, storyId)
@@ -149,6 +208,7 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
     const results = await Promise.allSettled(script.scenes.map(async (scene) => {
       await acquire()
       const sn = String(scene.scene_num).padStart(2, '0')
+      if (await pipelineDb.isCancelled(storyId)) { release(); return { sn, ok: false } }  // stopped → skip remaining scenes
       try {
         await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
         // Enforce the shared world + ONE consistent voice in every clip (continuity +
@@ -187,6 +247,13 @@ export async function runMascotAdPipeline(storyId: string): Promise<void> {
       if (r.status === 'fulfilled' && r.value.ok) successful.push({ sceneNum: String(scene.scene_num).padStart(2, '0') })
     })
     const done = successful.length
+    // Stopped by the user → finalize as stopped, skip the (costly) composite.
+    if (await pipelineDb.isCancelled(storyId)) {
+      await log('Generation stopped by user')
+      await storiesDb.update(storyId, { status: 'failed', notes: 'Stopped by you', scenes_count: done })
+      await pipelineDb.setStep(storyId, 'failed')
+      return
+    }
     await storiesDb.update(storyId, {
       status: done > 0 ? 'clips_ready' : 'failed',
       clips_generated_at: new Date().toISOString(), scenes_count: done,

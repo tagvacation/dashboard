@@ -21,8 +21,15 @@ const { claimNextJob, dispatchJob, requeueStale } = await import('../src/lib/pip
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 let stopping = false
-process.on('SIGTERM', () => { console.log('[worker] SIGTERM — finishing current job then exiting'); stopping = true })
-process.on('SIGINT', () => { console.log('[worker] SIGINT — finishing current job then exiting'); stopping = true })
+// First signal = graceful (finish current job). Second = force quit immediately (a running
+// generation can take minutes, so don't make the user wait if they really want out).
+function shutdown(sig: string) {
+  if (stopping) { console.log(`[worker] ${sig} again — force quit`); process.exit(0) }
+  stopping = true
+  console.log(`[worker] ${sig} — finishing current job, then exiting. Press Ctrl+C again to force quit now.`)
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
 console.log('[worker] started; polling for queued jobs…')
 const recovered = await requeueStale().catch(() => 0)

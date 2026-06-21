@@ -155,11 +155,22 @@ function CreateAdInner() {
     fetch('/api/stores').then(r => r.json()).then(d => setStores(d.stores || [])).catch(() => {})
   }, [])
 
+  // Page-back / refresh / close safety: warn if leaving with a filled-in form (unless submitting).
+  const dirty = !!(name.trim() || audience.trim() || benefits.some(b => b.trim()) || imagePreview || productUrl.trim())
+  useEffect(() => {
+    if (!dirty || submitting) return
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [dirty, submitting])
+
   const onImageSelect = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) return setError('Please choose an image file')
     if (file.size > 8 * 1024 * 1024) return setError('Image too large (max 8MB)')
     setError('')
     setImageFile(file)
+    // Uploading your own image overrides any image picked from the fetched product page.
+    setSelectedImage(''); setPrefill(null); setModelPicks([])
     const reader = new FileReader()
     reader.onload = e => setImagePreview(e.target?.result as string)
     reader.readAsDataURL(file)
@@ -215,6 +226,7 @@ function CreateAdInner() {
           target_audience: audience.trim(),
           tone, voice, music, duration_sec: duration,
           ad_style: adStyle,
+          preview: adStyle === 'mascot',   // mascot → cheap storyboard preview to approve before Veo
           imageGcsUri,
           cutoutGcsUri,
           modelImages,
@@ -228,7 +240,8 @@ function CreateAdInner() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Generation failed')
 
-      router.push('/library')
+      // Mascot → land on the story page to review the storyboard preview; others → library.
+      router.push(data.story_id ? `/library/${data.story_id}` : '/library')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong')
       setSubmitting(false)
@@ -425,7 +438,7 @@ function CreateAdInner() {
         </FormCard>
 
         {/* 3. Image upload */}
-        <FormCard step="03" title="Product image" subtitle="Upload your real product photo — Veo animates your actual product, not a generic one">
+        <FormCard step="03" title="Product image" subtitle="Upload your own photo to use instead of a fetched image — this overrides whatever you picked above">
           {!imagePreview ? (
             <div
               onDrop={onDrop}
@@ -528,7 +541,7 @@ function CreateAdInner() {
                   </svg>
                   Starting...
                 </span>
-              ) : '✦ Generate Ad'}
+              ) : adStyle === 'mascot' ? '✦ Preview storyboard' : '✦ Generate Ad'}
             </button>
           </div>
         </div>

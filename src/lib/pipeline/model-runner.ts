@@ -118,6 +118,7 @@ export async function runModelVideoPipeline(storyId: string): Promise<void> {
         await acquire()
         const sn = String(scene.scene_num).padStart(2, '0')
         const baseImg = imgs[idx % imgs.length]
+        if (await pipelineDb.isCancelled(storyId)) { release(); return { sn, ok: false, filtered: false } }  // stopped → skip remaining
         try {
           await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
           const base64 = await generateVeoClip(scene.video_prompt, ctx, {
@@ -165,6 +166,12 @@ export async function runModelVideoPipeline(storyId: string): Promise<void> {
     }
 
     const sceneNums = results.filter(r => r.ok).map(r => r.sn)
+    if (await pipelineDb.isCancelled(storyId)) {
+      await log('Generation stopped by user')
+      await storiesDb.update(storyId, { status: 'failed', notes: 'Stopped by you', scenes_count: done })
+      await pipelineDb.setStep(storyId, 'failed')
+      return
+    }
     await storiesDb.update(storyId, {
       status: done > 0 ? 'clips_ready' : 'failed',
       clips_generated_at: new Date().toISOString(), scenes_count: done,

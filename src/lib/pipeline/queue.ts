@@ -12,7 +12,7 @@
  */
 import { sql } from '../db'
 
-export type JobType = 'ad' | 'story'
+export type JobType = 'ad' | 'story' | 'draft'
 export interface JobParams { categoryId?: string; credentialId?: string }
 
 const workerMode = () => process.env.USE_WORKER === '1'
@@ -35,6 +35,9 @@ export async function dispatchJob(storyId: string, jobType: JobType, params: Job
   if (jobType === 'ad') {
     const { runAdPipeline } = await import('./ad-runner')
     await runAdPipeline(storyId)
+  } else if (jobType === 'draft') {
+    const { runMascotDraft } = await import('./draft-runner')
+    await runMascotDraft(storyId)
   } else {
     const { runPipeline } = await import('./runner')
     await runPipeline(storyId, params.categoryId, params.credentialId)

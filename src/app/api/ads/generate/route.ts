@@ -38,8 +38,9 @@ export async function POST(req: NextRequest) {
   let cred = (credentialId && credentialId !== 'default') ? await gcpCredentialsDb.get(credentialId) : null
   if (cred && cred.user_id !== userId) cred = null // ownership check
   if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
-  if (!cred) return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 })
-  const resolvedCredId = cred.id
+  // No per-user account → use the shared MAIN account (env). credentialId '' makes the
+  // pipeline fall back to envContext(). (We no longer force every merchant to add their own.)
+  const resolvedCredId = cred?.id || ''
 
   // Generate story_id
   // URL-safe slug: collapse any non-alphanumeric run (spaces, %, etc.) to '_'.
@@ -78,11 +79,13 @@ export async function POST(req: NextRequest) {
     await sql`UPDATE pipeline_runs SET user_id = ${userId} WHERE story_id = ${storyId}`
 
     // Queue for the worker (USE_WORKER=1) so heavy work runs off the web process; otherwise
-    // run inline (local/dev) — same behaviour as before. Returns fast either way; UI polls.
+    // run inline (local/dev). When body.preview is set (mascot only), make a cheap storyboard
+    // DRAFT first (Imagen stills, no Veo) for the merchant to approve before we spend on Veo.
     const { runOrEnqueue } = await import('@/lib/pipeline/queue')
-    await runOrEnqueue(storyId, 'ad')
+    const jobType = (body.preview === true && adStyle === 'mascot') ? 'draft' : 'ad'
+    await runOrEnqueue(storyId, jobType)
 
-    return NextResponse.json({ story_id: storyId })
+    return NextResponse.json({ story_id: storyId, draft: jobType === 'draft' })
   } catch (e) {
     console.error('Ad generate error:', e)
     return NextResponse.json({ error: e instanceof Error ? e.message : 'Failed' }, { status: 500 })

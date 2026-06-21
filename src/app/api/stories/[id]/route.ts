@@ -12,6 +12,25 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params
   try {
     const row = await storiesDb.get(id)
+
+    // Storyboard DRAFT preview (status='draft'): expose the brief + Imagen stills for review.
+    let draft: unknown = undefined
+    if (row?.status === 'draft') {
+      const [pr] = await sql<{ operation_ids: { draftStills?: unknown[]; draftConcept?: { villain_description_en?: string } } | null; script_json: string }[]>`
+        SELECT operation_ids, script_json FROM pipeline_runs WHERE story_id = ${id}`
+      const meta = pr?.operation_ids || {}
+      let sc: Record<string, unknown> = {}
+      try { sc = JSON.parse(pr?.script_json || '{}') } catch { /* ignore */ }
+      draft = {
+        stills: meta.draftStills || [],
+        title: sc.ad_title_hindi || '',
+        tagline: sc.tagline_hinglish || '',
+        world: sc.world_description_en || '',
+        villain: meta.draftConcept?.villain_description_en || '',
+        voice: sc.voice_persona || '',
+      }
+    }
+
     return NextResponse.json({
       story: {
         ...(row || {}),
@@ -19,6 +38,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         hasAudio: !!row?.audio_url,
         audio_url: row?.audio_url || '',
         scenes_count: row?.scenes_count || 0,
+        draft,
       },
     })
   } catch (e: unknown) {

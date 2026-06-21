@@ -32,27 +32,44 @@ export async function getAccessToken(ctx: GcpContext): Promise<string> {
 }
 
 /**
- * Resolve a USER's GcpContext (multi-tenant — no env default):
- *   explicit credentialId → the user's default account → throw NO_GCP_ACCOUNT.
- * Callers should map NO_GCP_ACCOUNT to an "add a Cloud account" prompt.
+ * The shared "main" Cloud account from env (GCS_SERVICE_ACCOUNT_JSON + GCS_BUCKET + GCP_PROJECT_ID).
+ * This is the default everything falls back to — so a merchant doesn't need their own account.
+ */
+export function envContext(): GcpContext | null {
+  const sa = process.env.GCS_SERVICE_ACCOUNT_JSON
+  const bucket = process.env.GCS_BUCKET
+  const projectId = process.env.GCP_PROJECT_ID
+  if (!sa || !bucket || !projectId) return null
+  try { return { credentials: JSON.parse(sa), projectId, bucket, region: GCP_REGION } }
+  catch { return null }
+}
+
+/**
+ * Resolve a USER's GcpContext: explicit credentialId → the user's default account →
+ * the MAIN env account. Only throws NO_GCP_ACCOUNT if none of those exist.
  */
 export async function getUserGcpContext(userId: string, credentialId?: string | null): Promise<GcpContext> {
   const { gcpCredentialsDb } = await import('../db')
   let cred: GcpCredential | null = null
   if (credentialId && credentialId !== 'default') cred = await gcpCredentialsDb.get(credentialId)
   if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
-  if (!cred) throw new Error('NO_GCP_ACCOUNT')
-  return contextFromCredential(cred)
+  if (cred) return contextFromCredential(cred)
+  const env = envContext()
+  if (env) return env
+  throw new Error('NO_GCP_ACCOUNT')
 }
 
 /**
- * Load a GcpContext by credential id (pipeline runs store a real credential id).
- * Throws NO_GCP_ACCOUNT if the id is missing or not found — there is no env default.
+ * Load a GcpContext by credential id; falls back to the MAIN env account when the id is
+ * missing/unknown (so stories created against the shared account keep working).
  */
 export async function loadGcpContext(credentialId?: string | null): Promise<GcpContext> {
-  if (!credentialId || credentialId === 'default') throw new Error('NO_GCP_ACCOUNT')
-  const { gcpCredentialsDb } = await import('../db')
-  const cred = await gcpCredentialsDb.get(credentialId)
-  if (!cred) throw new Error('NO_GCP_ACCOUNT')
-  return contextFromCredential(cred)
+  if (credentialId && credentialId !== 'default') {
+    const { gcpCredentialsDb } = await import('../db')
+    const cred = await gcpCredentialsDb.get(credentialId)
+    if (cred) return contextFromCredential(cred)
+  }
+  const env = envContext()
+  if (env) return env
+  throw new Error('NO_GCP_ACCOUNT')
 }

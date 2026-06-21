@@ -16,15 +16,14 @@ export function publicUrl(ctx: GcpContext, path: string): string {
   return `https://storage.googleapis.com/${ctx.bucket}/${path}`
 }
 
-/** Resolve the GcpContext that owns a story (its gcp_credential_id). Throws NO_GCP_ACCOUNT. */
+/** Resolve the GcpContext that owns a story: its credential → owner's default → MAIN env account. */
 export async function contextForStory(storyId: string): Promise<GcpContext> {
   const { sql, gcpCredentialsDb } = await import('./db')
-  const { loadGcpContext, contextFromCredential } = await import('./pipeline/auth')
+  const { loadGcpContext, contextFromCredential, envContext } = await import('./pipeline/auth')
   const [row] = await sql<{ gcp_credential_id: string | null; user_id: string | null }[]>`
     SELECT gcp_credential_id, user_id FROM stories WHERE story_id = ${storyId}`
   if (row?.gcp_credential_id && row.gcp_credential_id !== 'default') return loadGcpContext(row.gcp_credential_id)
-  // Older stories created before per-story credentials were recorded: fall back to the
-  // owner's default Cloud account (their assets live in that bucket) and backfill the row.
+  // No per-story credential: try the owner's default account, else the shared main account.
   if (row?.user_id) {
     const cred = await gcpCredentialsDb.getDefaultForUser(row.user_id)
     if (cred) {
@@ -32,6 +31,8 @@ export async function contextForStory(storyId: string): Promise<GcpContext> {
       return contextFromCredential(cred)
     }
   }
+  const env = envContext()
+  if (env) return env
   throw new Error('NO_GCP_ACCOUNT')
 }
 

@@ -20,9 +20,14 @@ interface Story {
   store_id?: string
   product_url?: string
   variant_id?: string
+  draft?: {
+    stills: { scene_num: number; url: string; action?: string; dialogue?: string; beat?: string }[]
+    title?: string; tagline?: string; world?: string; villain?: string; voice?: string
+  }
 }
 
 const STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  draft:         { label: 'Draft — review',    color: 'bg-amber-500/20 text-amber-300 border-amber-500/30' },
   clips_ready:   { label: 'Clips ready',       color: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' },
   post_produced: { label: 'Reel ready',        color: 'bg-blue-500/20 text-blue-300 border-blue-500/30' },
   published:     { label: 'Live on YouTube',   color: 'bg-violet-500/20 text-violet-300 border-violet-500/30' },
@@ -49,6 +54,9 @@ export default function StoryDetailPage({ params }: { params: Promise<{ id: stri
   const [loading, setLoading] = useState(true)
   const [run, setRun] = useState<{ status: string; log: string[] } | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [draftBusy, setDraftBusy] = useState('')   // 'approve' | 'redraft' while in flight
+  const [refreshKey, setRefreshKey] = useState(0)  // bump to restart polling after approve/redraft
+  const [cancelling, setCancelling] = useState(false)
 
   // Lazy clips — only fetched (and only downloaded) when the user opens the section.
   const [clips, setClips] = useState<Clip[] | null>(null)
@@ -144,7 +152,33 @@ export default function StoryDetailPage({ params }: { params: Promise<{ id: stri
     }
     tick()
     return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [id])
+  }, [id, refreshKey])
+
+  // Stop an in-progress generation (skips remaining Veo scenes; marks it stopped).
+  async function cancelGen() {
+    if (!confirm('Stop this generation? Scenes already submitted to Veo can\'t be refunded, but the rest are skipped.')) return
+    setCancelling(true)
+    try {
+      const r = await fetch(`/api/stories/${id}/cancel`, { method: 'POST' })
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Failed to stop') }
+      setRefreshKey(k => k + 1)
+    } catch (e) { alert(e instanceof Error ? e.message : 'Failed to stop') }
+    finally { setCancelling(false) }
+  }
+
+  // Approve a storyboard draft (render it) or regenerate the preview.
+  async function draftAction(action: 'approve' | 'redraft') {
+    setDraftBusy(action)
+    try {
+      const r = await fetch(`/api/ads/${id}/approve`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      })
+      if (!r.ok) { const d = await r.json().catch(() => ({})); throw new Error(d.error || 'Failed') }
+      setRefreshKey(k => k + 1) // restart polling — status moves to queued → generating
+    } catch (e) { alert(e instanceof Error ? e.message : 'Failed') }
+    finally { setDraftBusy('') }
+  }
 
   if (loading) return (
     <div className="px-4 md:px-8 py-8 max-w-5xl mx-auto">
@@ -197,8 +231,48 @@ export default function StoryDetailPage({ params }: { params: Promise<{ id: stri
         <div className="my-4 px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg text-xs text-amber-300">⚠ {story.notes}</div>
       )}
 
+      {/* Storyboard DRAFT — cheap preview to approve BEFORE spending on Veo */}
+      {story.status === 'draft' && story.draft && (
+        <div className="mt-6 mb-8 bg-gradient-to-br from-amber-500/10 to-purple-500/10 border border-amber-500/30 rounded-2xl overflow-hidden">
+          <div className="p-5 border-b border-amber-500/20">
+            <p className="text-sm font-bold text-amber-200">📝 Storyboard preview — approve before we render the video</p>
+            <p className="text-xs text-white/50 mt-0.5">These are cheap preview stills. Approve to generate the full video, or regenerate the concept.</p>
+            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-xs">
+              {story.draft.title && <p><span className="text-white/40">Title:</span> <span className="text-white/80">{story.draft.title}</span></p>}
+              {story.draft.tagline && <p><span className="text-white/40">Tagline:</span> <span className="text-white/80">{story.draft.tagline}</span></p>}
+              {story.draft.world && <p className="sm:col-span-2"><span className="text-white/40">World:</span> <span className="text-white/70">{story.draft.world}</span></p>}
+              {story.draft.villain && <p className="sm:col-span-2"><span className="text-white/40">Villain:</span> <span className="text-white/70">{story.draft.villain}</span></p>}
+              {story.draft.voice && <p><span className="text-white/40">Voice:</span> <span className="text-white/70">{story.draft.voice}</span></p>}
+            </div>
+          </div>
+          <div className="p-5 bg-black/30 grid grid-cols-2 md:grid-cols-3 gap-3">
+            {story.draft.stills.map(s => (
+              <div key={s.scene_num} className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={s.url} alt={`Scene ${s.scene_num}`} className="w-full aspect-[9/16] object-cover bg-black" />
+                <div className="px-2.5 py-2">
+                  <p className="text-[11px] text-amber-300 font-semibold">Scene {s.scene_num}{s.beat ? ` · ${s.beat}` : ''}</p>
+                  {s.dialogue && <p className="text-[11px] text-white/60 mt-0.5 line-clamp-2">{s.dialogue}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="p-5 border-t border-amber-500/20 flex items-center gap-3">
+            <button onClick={() => draftAction('approve')} disabled={!!draftBusy}
+              className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 disabled:opacity-40 rounded-xl text-sm font-semibold">
+              {draftBusy === 'approve' ? 'Starting…' : '✅ Approve & Generate video'}
+            </button>
+            <button onClick={() => draftAction('redraft')} disabled={!!draftBusy}
+              className="px-4 py-2.5 bg-white/10 hover:bg-white/15 disabled:opacity-40 rounded-xl text-sm font-semibold">
+              {draftBusy === 'redraft' ? 'Regenerating…' : '🔄 Regenerate concept'}
+            </button>
+            <span className="text-xs text-white/30 ml-auto">Approving spends Veo credits; the preview was free-ish.</span>
+          </div>
+        </div>
+      )}
+
       {/* Final reel — primary view */}
-      {story.final_url ? (
+      {story.status !== 'draft' && (story.final_url ? (
         <div className="mt-6 mb-8 bg-gradient-to-br from-purple-500/10 to-pink-500/10 border border-purple-500/30 rounded-2xl overflow-hidden">
           <div className="p-5 border-b border-purple-500/20 flex items-center justify-between gap-4">
             <div>
@@ -253,10 +327,16 @@ export default function StoryDetailPage({ params }: { params: Promise<{ id: stri
                 {recent.map((l, i) => <div key={i} className="truncate">{String(l).replace(/^\[[^\]]+\]\s*/, '')}</div>)}
               </div>
             )}
-            <p className="text-xs text-white/30 mt-3">Auto-refreshing every 4s — you can leave this page; generation continues.</p>
+            <div className="flex items-center justify-between gap-3 mt-3">
+              <p className="text-xs text-white/30">Auto-refreshing every 4s — you can leave this page; generation continues.</p>
+              <button onClick={cancelGen} disabled={cancelling}
+                className="shrink-0 px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-300 border border-red-500/30 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40">
+                {cancelling ? 'Stopping…' : '■ Stop generation'}
+              </button>
+            </div>
           </div>
         )
-      })()}
+      })())}
 
       {/* Shoppable settings */}
       {isAd && (

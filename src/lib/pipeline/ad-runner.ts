@@ -275,6 +275,7 @@ export async function runAdPipeline(storyId: string): Promise<void> {
       await acquire()
       const sn = String(scene.scene_num).padStart(2, '0')
       const clipPath = `stories/${storyId}/clips/scene_${sn}.mp4`
+      if (await pipelineDb.isCancelled(storyId)) { release(); return { sn, ok: false } }  // stopped → skip remaining
       try {
         if (await gcsExists(ctx, clipPath)) {
           await sceneJobsDb.update(storyId, sn, 1, { status: 'done' })
@@ -335,6 +336,12 @@ export async function runAdPipeline(storyId: string): Promise<void> {
     const done = successfulScenes.length
     const failed = results.length - done
 
+    if (await pipelineDb.isCancelled(storyId)) {
+      await log('Generation stopped by user')
+      await storiesDb.update(storyId, { status: 'failed', notes: 'Stopped by you', scenes_count: done })
+      await pipelineDb.setStep(storyId, 'failed')
+      return
+    }
     await storiesDb.update(storyId, {
       status: done > 0 ? 'clips_ready' : 'failed',
       clips_generated_at: new Date().toISOString(),

@@ -237,6 +237,7 @@ async function createTablesInner() {
   // Worker queue: job_type marks which runner handles a queued job; partial index keeps the
   // worker's "next queued job" poll instant. (status='queued' is set by the enqueue layer.)
   await sql`ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS job_type TEXT DEFAULT ''`
+  await sql`ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN DEFAULT false`
   await sql`CREATE INDEX IF NOT EXISTS idx_pipeline_runs_queued ON pipeline_runs (created_at) WHERE status = 'queued'`
 }
 
@@ -360,6 +361,15 @@ export const pipelineDb = {
   delete: async (storyId: string): Promise<void> => {
     await ensureDb()
     await sql`DELETE FROM pipeline_runs WHERE story_id = ${storyId}`
+  },
+  // ── Cancellation: a running pipeline polls isCancelled() at safe points and aborts ──
+  requestCancel: async (storyId: string): Promise<void> => {
+    await ensureDb()
+    await sql`UPDATE pipeline_runs SET cancel_requested = true, updated_at = NOW() WHERE story_id = ${storyId}`
+  },
+  isCancelled: async (storyId: string): Promise<boolean> => {
+    const [r] = await sql<{ cancel_requested: boolean }[]>`SELECT cancel_requested FROM pipeline_runs WHERE story_id = ${storyId}`
+    return !!r?.cancel_requested
   },
 }
 
