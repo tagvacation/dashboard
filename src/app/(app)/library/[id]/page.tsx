@@ -245,7 +245,13 @@ export default function StoryDetailPage({ params }: { params: Promise<{ id: stri
               {story.draft.voice && <p><span className="text-white/40">Voice:</span> <span className="text-white/70">{story.draft.voice}</span></p>}
             </div>
           </div>
-          <div className="p-5 bg-black/30 grid grid-cols-2 md:grid-cols-3 gap-3">
+          {draftBusy && (
+            <div className="px-5 py-3 bg-amber-500/20 border-b border-amber-500/30 flex items-center gap-2 text-amber-100 text-xs font-semibold">
+              <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+              {draftBusy === 'approve' ? 'Starting the full video render…' : 'Regenerating the storyboard…'}
+            </div>
+          )}
+          <div className={`p-5 bg-black/30 grid grid-cols-2 md:grid-cols-3 gap-3 transition-opacity ${draftBusy ? 'opacity-40 pointer-events-none' : ''}`}>
             {story.draft.stills.map(s => (
               <div key={s.scene_num} className="bg-white/[0.03] border border-white/10 rounded-xl overflow-hidden">
                 {/* eslint-disable-next-line @next/next/no-img-element */}

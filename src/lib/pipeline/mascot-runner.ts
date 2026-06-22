@@ -26,6 +26,7 @@ interface MascotMeta {
   music?: string | null            // background-music mood ('none' | mood | null=auto)
   reuseScript?: boolean            // approved draft → render the stored concept/script verbatim
   draftConcept?: Record<string, unknown>  // concept captured at draft time (villain, voice, etc.)
+  draftStills?: { scene_num: number }[]   // approved storyboard stills → used as per-scene Veo first frames
   credentialId?: string | null
 }
 
@@ -205,15 +206,23 @@ Premium Pixar-style, very cute, soft glossy 3D rendering with cinematic key ligh
     const acquire = () => new Promise<void>(res => { if (active < MAX) { active++; res() } else queue.push(() => { active++; res() }) })
     const release = () => { active--; const n = queue.shift(); if (n) n() }
 
+    // Approved-draft scenes that have a storyboard still → animate FROM that exact still (so the
+    // video matches the preview the merchant approved + the still is 9:16). Else use the mascot sheet.
+    const draftStillScenes = new Set((meta.draftStills || []).map(s => String(s.scene_num).padStart(2, '0')))
+
     const results = await Promise.allSettled(script.scenes.map(async (scene) => {
       await acquire()
       const sn = String(scene.scene_num).padStart(2, '0')
       if (await pipelineDb.isCancelled(storyId)) { release(); return { sn, ok: false } }  // stopped → skip remaining scenes
       try {
         await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
+        const useStill = meta.reuseScript && draftStillScenes.has(sn)
+        const firstFrame = useStill ? `gs://${ctx.bucket}/stories/${storyId}/storyboard/scene_${sn}.png` : mascotGcs
         // Enforce the shared world + ONE consistent voice in every clip (continuity +
         // fixes the male/female voice flip across independent Veo clips).
         const prefix: string[] = []
+        // When animating the approved still, anchor hard to it so Veo doesn't morph the character.
+        if (useStill) prefix.push('Bring THIS exact image to life with smooth cinematic motion. Keep the character, its shape and the composition IDENTICAL to the image — do NOT morph it, redraw it, or turn it into a human/anything else.')
         if (script.world_description_en) prefix.push(`Setting (identical every scene for continuity): ${script.world_description_en}`)
         // User-picked voice overrides the AI's choice; else use the AI's voice_persona.
         const voice = meta.voice || script.voice_persona
@@ -223,7 +232,7 @@ Premium Pixar-style, very cute, soft glossy 3D rendering with cinematic key ligh
         const vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt
         // Auto-retry (handles the transient "No video in response" glitch).
         const base64 = await generateVeoClip(vp, ctx, {
-          model: MASCOT_VEO_MODEL, imageRef: { gcsUri: mascotGcs, mimeType: 'image/png' },
+          model: MASCOT_VEO_MODEL, imageRef: { gcsUri: firstFrame, mimeType: 'image/png' },
           generateAudio: true, attempts: 3,
         })
         const { Storage } = await import('@google-cloud/storage')

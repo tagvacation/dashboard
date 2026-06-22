@@ -70,6 +70,7 @@ export async function runMascotDraft(storyId: string): Promise<void> {
     const world = (script.world_description_en as string) || (concept.world_description_en as string) || ''
     const mascotBrief = String(script.mascot_image_prompt || concept.mascot_image_prompt || '').split(/[.,]/).slice(0, 2).join(', ')
     const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+    const stamp = Date.now()  // cache-bust: regenerate overwrites the same paths, so vary the URL
     const stills: { scene_num: number; url: string; action?: string; dialogue?: string; beat?: string }[] = []
     for (const s of scenes) {
       const sn = String(s.scene_num).padStart(2, '0')
@@ -77,8 +78,8 @@ export async function runMascotDraft(storyId: string): Promise<void> {
       try {
         const buf = await generateImage(prompt, ctx)
         const path = `stories/${storyId}/storyboard/scene_${sn}.png`
-        await bucket.file(path).save(buf, { contentType: 'image/png', resumable: false, metadata: { cacheControl: 'public, max-age=300' } })
-        stills.push({ scene_num: s.scene_num, url: `https://storage.googleapis.com/${ctx.bucket}/${path}`, action: s.action, dialogue: s.dialogue, beat: s.beat })
+        await bucket.file(path).save(buf, { contentType: 'image/png', resumable: false, metadata: { cacheControl: 'public, max-age=60' } })
+        stills.push({ scene_num: s.scene_num, url: `https://storage.googleapis.com/${ctx.bucket}/${path}?v=${stamp}`, action: s.action, dialogue: s.dialogue, beat: s.beat })
         await log(`  still ${sn} ✓`)
       } catch (e) { await log(`  still ${sn} failed: ${e instanceof Error ? e.message : e}`) }
     }
