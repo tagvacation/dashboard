@@ -224,6 +224,23 @@ async function createTablesInner() {
     )
   `
 
+  // Experiments — the shared coordination log for the two AI agents (the MCP "middle point").
+  // Each row = one test run (what was changed + the critic's scores) so agents build on each
+  // other's results instead of repeating them.
+  await sql`
+    CREATE TABLE IF NOT EXISTS experiments (
+      id SERIAL PRIMARY KEY,
+      agent TEXT DEFAULT '',
+      story_id TEXT DEFAULT '',
+      change TEXT DEFAULT '',
+      verdict TEXT DEFAULT '',
+      overall INTEGER,
+      scores JSONB DEFAULT '{}',
+      notes TEXT DEFAULT '',
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `
+
   // ── Performance indexes (idempotent) — keep the dashboard fast as data grows ──
   // These were previously only in scripts/add-performance-indexes.mjs (manual run);
   // folded in here so they always exist. CREATE INDEX IF NOT EXISTS is a no-op once present.
@@ -757,5 +774,25 @@ export const settingsDb = {
     await ensureDb()
     const rows = await sql<{ key: string; value: string }[]>`SELECT key, value FROM settings`
     return Object.fromEntries(rows.map(r => [r.key, r.value]))
+  },
+}
+
+// ─── Experiments — shared coordination log for the two AI agents (the MCP middle-point) ──
+export interface ExperimentRow {
+  id: number; agent: string; story_id: string; change: string
+  verdict: string; overall: number | null; scores: Record<string, unknown>; notes: string; created_at: string
+}
+
+export const experimentsDb = {
+  log: async (e: { agent?: string; story_id?: string; change?: string; verdict?: string; overall?: number | null; scores?: Record<string, unknown>; notes?: string }): Promise<void> => {
+    await ensureDb()
+    await sql`
+      INSERT INTO experiments (agent, story_id, change, verdict, overall, scores, notes)
+      VALUES (${e.agent ?? ''}, ${e.story_id ?? ''}, ${e.change ?? ''}, ${e.verdict ?? ''}, ${e.overall ?? null}, ${sql.json(JSON.parse(JSON.stringify(e.scores ?? {})))}, ${e.notes ?? ''})
+    `
+  },
+  list: async (limit = 20): Promise<ExperimentRow[]> => {
+    await ensureDb()
+    return sql<ExperimentRow[]>`SELECT * FROM experiments ORDER BY created_at DESC LIMIT ${limit}`
   },
 }

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mascot-lab": {
+      "command": "npx",
+      "args": ["tsx", "scripts/mcp-lab.mts"],
+      "cwd": "/Users/aman_thakur/Automate/dashboard"
+    }
+  }
+}

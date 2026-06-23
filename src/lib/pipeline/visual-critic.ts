@@ -88,7 +88,7 @@ Then:
 Return STRICT JSON only:
 { "product_fidelity":n, "character_consistency":n, "stays_product":n, "framing":n, "appeal":n, "overall":n, "verdict":"good|mixed|bad", "issues":["..."], "summary":"..." }`
 
-async function visionJudge(productB64: string, productMime: string, sheetB64: string, productInfo: string, ctx: GcpContext): Promise<Omit<VisualScore, 'storyboard_url'>> {
+export async function visionJudge(productB64: string, productMime: string, sheetB64: string, productInfo: string, ctx: GcpContext): Promise<Omit<VisualScore, 'storyboard_url'>> {
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash:generateContent`
   const res = await fetchWithRetry(url, {
@@ -105,14 +105,18 @@ async function visionJudge(productB64: string, productMime: string, sheetB64: st
           { text: 'Score it. Return JSON only.' },
         ],
       }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 2048, responseMimeType: 'application/json' },
+      generationConfig: { temperature: 0.2, maxOutputTokens: 4096, responseMimeType: 'application/json' },
     }),
   }, { label: 'visual-critic', timeoutMs: 120_000 })
   if (!res.ok) throw new Error(`vision ${res.status}: ${(await res.text()).slice(0, 160)}`)
   const data = await res.json()
+  const finish = data.candidates?.[0]?.finishReason
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-  if (!text) throw new Error('vision: empty response')
-  return JSON.parse(text)
+  if (!text) throw new Error(`vision: empty response (finishReason=${finish})`)
+  try { return JSON.parse(text) } catch { /* fall through to extraction */ }
+  const m = String(text).match(/\{[\s\S]*\}/)
+  if (m) return JSON.parse(m[0])
+  throw new Error(`vision: unparseable (finishReason=${finish}) raw: ${String(text).slice(0, 400)}`)
 }
 
 /** Full visual critique of a finished story: builds the storyboard, judges it vs the product. */

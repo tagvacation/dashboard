@@ -16,23 +16,20 @@ export function publicUrl(ctx: GcpContext, path: string): string {
   return `https://storage.googleapis.com/${ctx.bucket}/${path}`
 }
 
-/** Resolve the GcpContext that owns a story: its credential → owner's default → MAIN env account. */
+/**
+ * Resolve the GcpContext for STORAGE. Per project directive, ALL assets live in the single
+ * main account bucket — storage never follows a story's per-account credential (several are
+ * misconfigured, e.g. bucket "no-name"). Compute quota can spread across accounts; storage cannot.
+ */
 export async function contextForStory(storyId: string): Promise<GcpContext> {
-  const { sql, gcpCredentialsDb } = await import('./db')
-  const { loadGcpContext, contextFromCredential, envContext } = await import('./pipeline/auth')
-  const [row] = await sql<{ gcp_credential_id: string | null; user_id: string | null }[]>`
-    SELECT gcp_credential_id, user_id FROM stories WHERE story_id = ${storyId}`
-  if (row?.gcp_credential_id && row.gcp_credential_id !== 'default') return loadGcpContext(row.gcp_credential_id)
-  // No per-story credential: try the owner's default account, else the shared main account.
-  if (row?.user_id) {
-    const cred = await gcpCredentialsDb.getDefaultForUser(row.user_id)
-    if (cred) {
-      await sql`UPDATE stories SET gcp_credential_id = ${cred.id} WHERE story_id = ${storyId}`.catch(() => {})
-      return contextFromCredential(cred)
-    }
-  }
+  const { envContext, loadGcpContext } = await import('./pipeline/auth')
   const env = envContext()
   if (env) return env
+  // Only if the main account env is somehow unset: fall back to the story's own credential.
+  const { sql } = await import('./db')
+  const [row] = await sql<{ gcp_credential_id: string | null }[]>`
+    SELECT gcp_credential_id FROM stories WHERE story_id = ${storyId}`
+  if (row?.gcp_credential_id && row.gcp_credential_id !== 'default') return loadGcpContext(row.gcp_credential_id)
   throw new Error('NO_GCP_ACCOUNT')
 }
 

@@ -220,16 +220,27 @@ Premium Pixar-style, very cute, soft glossy 3D rendering with cinematic key ligh
         const firstFrame = useStill ? `gs://${ctx.bucket}/stories/${storyId}/storyboard/scene_${sn}.png` : mascotGcs
         // Enforce the shared world + ONE consistent voice in every clip (continuity +
         // fixes the male/female voice flip across independent Veo clips).
-        const prefix: string[] = []
-        // When animating the approved still, anchor hard to it so Veo doesn't morph the character.
-        if (useStill) prefix.push('Bring THIS exact image to life with smooth cinematic motion. Keep the character, its shape and the composition IDENTICAL to the image — do NOT morph it, redraw it, or turn it into a human/anything else.')
-        if (script.world_description_en) prefix.push(`Setting (identical every scene for continuity): ${script.world_description_en}`)
-        // User-picked voice overrides the AI's choice; else use the AI's voice_persona.
         const voice = meta.voice || script.voice_persona
-        if (voice) prefix.push(`The mascot speaks in the SAME voice every scene: ${voice}.`)
         const villain = concept.villain_description_en as string | undefined
-        if (villain) prefix.push(`Villain (render identically whenever it appears): ${villain}`)
-        const vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt
+        let vp: string
+        if (useStill) {
+          // Animate the approved still with PRODUCT-TRUE motion only. We DON'T feed the morphy
+          // "hero action" script — that's what turns the mascot humanoid on the action/climax beats.
+          const line = scene.dialogue ? `The mascot says, in ${voice || 'one consistent voice'}: "${scene.dialogue}"` : ''
+          vp = [
+            'Animate THIS exact image. CRITICAL: the product-mascot stays the EXACT same object in every single frame — it NEVER transforms, morphs, grows arms or legs, becomes a robot/human/superhero, or changes its shape or size.',
+            'The ONLY motion allowed: a gentle bob or tilt of the product, an expressive talking face, glowing energy and sparkles emanating FROM the product, and a smooth cinematic camera move (slow push-in or orbit) with dramatic lighting.',
+            script.world_description_en ? `Setting: ${script.world_description_en}` : '',
+            villain ? `Any villain is a SEPARATE creature, never the mascot: ${villain}` : '',
+            line,
+          ].filter(Boolean).join('\n')
+        } else {
+          const prefix: string[] = []
+          if (script.world_description_en) prefix.push(`Setting (identical every scene for continuity): ${script.world_description_en}`)
+          if (voice) prefix.push(`The mascot speaks in the SAME voice every scene: ${voice}.`)
+          if (villain) prefix.push(`Villain (render identically whenever it appears): ${villain}`)
+          vp = prefix.length ? `${prefix.join('\n')}\n\n${scene.video_prompt}` : scene.video_prompt
+        }
         // Auto-retry (handles the transient "No video in response" glitch).
         const base64 = await generateVeoClip(vp, ctx, {
           model: MASCOT_VEO_MODEL, imageRef: { gcsUri: firstFrame, mimeType: 'image/png' },

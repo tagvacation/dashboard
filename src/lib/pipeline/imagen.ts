@@ -56,20 +56,30 @@ async function uploadMascot(buf: Buffer, ctx: GcpContext, storyId: string) {
 export async function generateMascotFromImage(
   productImage: Buffer, mimeType: string, prompt: string, ctx: GcpContext, storyId: string,
 ): Promise<{ gcsUri: string; publicUrl: string }> {
+  const buf = await editImageNano(productImage, mimeType, prompt, ctx)
+  return uploadMascot(buf, ctx, storyId)
+}
+
+/**
+ * Low-level nano-banana (Gemini 2.5 Flash Image) edit: given a base image + instruction,
+ * return the edited image bytes. Used to keep the SAME mascot identical across scenes
+ * (generate it once, then "place this exact mascot into scene N") for consistency.
+ */
+export async function editImageNano(baseImage: Buffer, mimeType: string, prompt: string, ctx: GcpContext): Promise<Buffer> {
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash-image:generateContent`
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data: productImage.toString('base64') } }, { text: prompt }] }],
+      contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data: baseImage.toString('base64') } }, { text: prompt }] }],
       generationConfig: { responseModalities: ['IMAGE'] },
     }),
-  }, { label: 'nano-mascot', timeoutMs: 120_000 })
+  }, { label: 'nano-edit', timeoutMs: 120_000 })
   if (!res.ok) throw new Error(`gemini-image ${res.status}: ${(await res.text()).slice(0, 160)}`)
   const data = await res.json()
   const parts = data.candidates?.[0]?.content?.parts || []
   const imgPart = parts.find((p: { inlineData?: { data: string } }) => p.inlineData?.data)
   if (!imgPart) throw new Error('gemini-image returned no image')
-  return uploadMascot(Buffer.from(imgPart.inlineData.data, 'base64'), ctx, storyId)
+  return Buffer.from(imgPart.inlineData.data, 'base64')
 }

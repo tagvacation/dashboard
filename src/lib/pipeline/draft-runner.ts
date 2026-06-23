@@ -11,9 +11,15 @@
 import { sql, pipelineDb, storiesDb } from '../db'
 import { loadGcpContext } from './auth'
 import { callGemini } from './ad-runner'
-import { generateImage } from './imagen'
+import { generateImage, editImageNano } from './imagen'
 import { downloadGsUri } from '../gcs'
 import { Storage } from '@google-cloud/storage'
+import sharp from 'sharp'
+
+/** Force any image to true 9:16 (1080x1920) — nano-banana inherits the product's square shape,
+ *  which Veo then boxes inside the vertical frame. Cover-crop keeps the centered mascot, no bars. */
+const to916 = (buf: Buffer): Promise<Buffer> =>
+  sharp(buf).resize(1080, 1920, { fit: 'cover', position: 'centre' }).png().toBuffer()
 
 interface DraftMeta {
   product: { name: string; category: string; price?: number; benefits: string[]; ingredients?: string | null; target_audience: string; tone: string; duration_sec: number }
@@ -47,12 +53,12 @@ export async function runMascotDraft(storyId: string): Promise<void> {
       SELECT prompt_topic_picker, prompt_script_writer FROM content_categories WHERE id = 'ai_ad_mascot_drama'`
     if (!cat) throw new Error('ai_ad_mascot_drama category not found')
 
-    // 1. Concept
+    // 1. Concept — the RESEARCHER produces an engagement-optimized, (Search-grounded) brief.
     await pipelineDb.setStep(storyId, 'topic')
-    await log('Designing concept...')
-    const concept = await callGemini(cat.prompt_topic_picker,
-      `Product details:\n${JSON.stringify(product, null, 2)}\n\nThe attached image (if any) is the REAL product. Invent the mascot hero + villain + story. Return JSON only.`,
-      ctx, 0.95, productImage)
+    await log('Researching product + engagement angle...')
+    const { researchBrief } = await import('./researcher')
+    const concept = await researchBrief(product as unknown as Record<string, unknown>, ctx, productImage)
+    if (concept.hook) await log(`Hook: ${String(concept.hook).slice(0, 90)}`)
 
     // 2. Script
     await pipelineDb.setStep(storyId, 'script')
@@ -64,21 +70,43 @@ export async function runMascotDraft(storyId: string): Promise<void> {
     const scenes = (script.scenes as { scene_num: number; beat?: string; action?: string; dialogue?: string }[]) || []
     await log(`Script: "${script.ad_title_hindi}" (${scenes.length} scenes)`)
 
-    // 3. Cheap Imagen stills (one per scene) — the preview the merchant approves.
+    // 3. Storyboard stills — the preview the merchant approves (these become the video's keyframes).
     await pipelineDb.setStep(storyId, 'audio') // reuse label for "asset prep"
-    await log(`Rendering ${scenes.length} preview stills (Imagen, no Veo)...`)
     const world = (script.world_description_en as string) || (concept.world_description_en as string) || ''
-    const mascotBrief = String(script.mascot_image_prompt || concept.mascot_image_prompt || '').split(/[.,]/).slice(0, 2).join(', ')
+    const fullMascotPrompt = String(script.mascot_image_prompt || concept.mascot_image_prompt || '')
     const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
     const stamp = Date.now()  // cache-bust: regenerate overwrites the same paths, so vary the URL
+
+    // Build ONE product-faithful mascot first (nano-banana from the real product photo), then
+    // EDIT that same mascot into each scene → consistent character + true to the product (fixes
+    // the "3 different non-product mascots" problem of independent per-scene Imagen).
+    let mascotBuf: Buffer | null = null
+    if (productImage) {
+      const editPrompt = `Turn this product into a LOVABLE cute mascot character (think M&M's, Cup Noodles, Mr. Clean-bottle) by adding personality DIRECTLY onto the product object: big expressive Pixar-style eyes with eyebrows, a warm charming smile, and tiny cute stub arms — full of charm and emotion. CRITICAL: the mascot IS this exact product — keep its real shape, proportions, colours and label 100% UNCHANGED, and add NO human body (no legs, no torso, no standing humanoid figure, no superhero). It is the product object brought to life with a face + tiny arms. Premium glossy 3D, expressive and adorable, soft clean studio background, whole product centered, vertical 9:16.`
+      try {
+        await log('Designing the product mascot (nano-banana)...')
+        mascotBuf = await to916(await editImageNano(Buffer.from(productImage.data, 'base64'), productImage.mimeType, editPrompt, ctx))
+        await bucket.file(`stories/${storyId}/mascot.png`).save(mascotBuf, { contentType: 'image/png', resumable: false })
+      } catch (e) { await log(`mascot sheet failed (${e instanceof Error ? e.message : e}); using text stills`) }
+    }
+
+    await log(`Rendering ${scenes.length} preview stills (no Veo)...`)
     const stills: { scene_num: number; url: string; action?: string; dialogue?: string; beat?: string }[] = []
     for (const s of scenes) {
       const sn = String(s.scene_num).padStart(2, '0')
-      const prompt = `${world}. ${s.action || s.beat || ''}. Featuring the product mascot (${mascotBrief}). Premium Pixar-style 3D, dynamic, cinematic lighting, vertical 9:16, no text or letters.`
       try {
-        const buf = await generateImage(prompt, ctx)
+        let buf: Buffer
+        if (mascotBuf) {
+          // Place the SAME mascot into this scene. CRITICAL: lock the product shape — do NOT
+          // pass the "hero action" (it makes nano draw a humanoid superhero). Just set the scene.
+          const scenePrompt = `Show THIS exact mascot (the product object with a cute face) in this setting: ${world}. Keep it 100% IDENTICAL — same product shape, colours and face. It STAYS the product object with a face — NEVER add a human body, arms, legs, torso, or turn it into a person/superhero. Premium Pixar-style 3D, cinematic lighting, vertical 9:16, no text or letters.`
+          buf = await editImageNano(mascotBuf, 'image/png', scenePrompt, ctx)
+            .catch(() => generateImage(`${world}. ${s.action || s.beat || ''}. The product mascot: ${fullMascotPrompt}. Premium Pixar 3D, vertical 9:16, no text.`, ctx))
+        } else {
+          buf = await generateImage(`${world}. ${s.action || s.beat || ''}. The product mascot: ${fullMascotPrompt}. Premium Pixar-style 3D, cinematic lighting, vertical 9:16, no text or letters.`, ctx)
+        }
         const path = `stories/${storyId}/storyboard/scene_${sn}.png`
-        await bucket.file(path).save(buf, { contentType: 'image/png', resumable: false, metadata: { cacheControl: 'public, max-age=60' } })
+        await bucket.file(path).save(await to916(buf), { contentType: 'image/png', resumable: false, metadata: { cacheControl: 'public, max-age=60' } })
         stills.push({ scene_num: s.scene_num, url: `https://storage.googleapis.com/${ctx.bucket}/${path}?v=${stamp}`, action: s.action, dialogue: s.dialogue, beat: s.beat })
         await log(`  still ${sn} ✓`)
       } catch (e) { await log(`  still ${sn} failed: ${e instanceof Error ? e.message : e}`) }
