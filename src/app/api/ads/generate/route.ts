@@ -34,12 +34,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
   }
 
-  // Resolve the user's Cloud account (no env default). Gate if they have none.
+  // Directive: generation runs on the MAIN account. Only honor an explicit, owned credential;
+  // otherwise default to main (credentialId '' → pipeline uses envContext()). We no longer
+  // auto-pick the user's "default" account — the active ones here are misconfigured
+  // (billing disabled / bucket "no-name") and were silently breaking generation.
   let cred = (credentialId && credentialId !== 'default') ? await gcpCredentialsDb.get(credentialId) : null
   if (cred && cred.user_id !== userId) cred = null // ownership check
-  if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
-  // No per-user account → use the shared MAIN account (env). credentialId '' makes the
-  // pipeline fall back to envContext(). (We no longer force every merchant to add their own.)
   const resolvedCredId = cred?.id || ''
 
   // Generate story_id

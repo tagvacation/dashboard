@@ -45,31 +45,35 @@ export function envContext(): GcpContext | null {
 }
 
 /**
- * Resolve a USER's GcpContext: explicit credentialId → the user's default account →
- * the MAIN env account. Only throws NO_GCP_ACCOUNT if none of those exist.
+ * Resolve a USER's GcpContext for compute + storage.
+ * Directive: everything runs on the MAIN account — so env (main) is preferred ALWAYS. We do NOT
+ * auto-pick a user's "default" account, because the only active per-user accounts here are
+ * misconfigured (billing disabled / bucket "no-name") and were silently breaking generation.
+ * (When a real 2nd working account is added for compute-quota spreading, opt in explicitly then.)
  */
-export async function getUserGcpContext(userId: string, credentialId?: string | null): Promise<GcpContext> {
-  const { gcpCredentialsDb } = await import('../db')
-  let cred: GcpCredential | null = null
-  if (credentialId && credentialId !== 'default') cred = await gcpCredentialsDb.get(credentialId)
-  if (!cred) cred = await gcpCredentialsDb.getDefaultForUser(userId)
-  if (cred) return contextFromCredential(cred)
+export async function getUserGcpContext(_userId: string, credentialId?: string | null): Promise<GcpContext> {
   const env = envContext()
   if (env) return env
-  throw new Error('NO_GCP_ACCOUNT')
-}
-
-/**
- * Load a GcpContext by credential id; falls back to the MAIN env account when the id is
- * missing/unknown (so stories created against the shared account keep working).
- */
-export async function loadGcpContext(credentialId?: string | null): Promise<GcpContext> {
+  // Only if the main account env is unset: honor an explicit credential.
   if (credentialId && credentialId !== 'default') {
     const { gcpCredentialsDb } = await import('../db')
     const cred = await gcpCredentialsDb.get(credentialId)
     if (cred) return contextFromCredential(cred)
   }
+  throw new Error('NO_GCP_ACCOUNT')
+}
+
+/**
+ * Load a GcpContext by credential id. Same directive: prefer the MAIN env account always, so
+ * stories tagged to a broken per-account credential still run on main.
+ */
+export async function loadGcpContext(credentialId?: string | null): Promise<GcpContext> {
   const env = envContext()
   if (env) return env
+  if (credentialId && credentialId !== 'default') {
+    const { gcpCredentialsDb } = await import('../db')
+    const cred = await gcpCredentialsDb.get(credentialId)
+    if (cred) return contextFromCredential(cred)
+  }
   throw new Error('NO_GCP_ACCOUNT')
 }
