@@ -65,7 +65,7 @@ export async function runMascotDraft(storyId: string): Promise<void> {
     const scenesWanted = Math.min(8, Math.max(3, Math.round((product.duration_sec || 32) / 8)))
     await log(`Writing ${scenesWanted} scenes...`)
     const script = await callGemini(cat.prompt_script_writer,
-      `Concept input:\n${JSON.stringify({ ...product, scenes_count: scenesWanted, ...concept }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} action scenes with Hinglish dialogue. Return JSON.`,
+      `Concept input:\n${JSON.stringify({ ...product, scenes_count: scenesWanted, ...concept }, null, 2)}\n\nProduce EXACTLY ${scenesWanted} scenes that FOLLOW the ad_archetype + structure above (do NOT force a villain fight), each with a Hinglish spoken line. Return JSON.`,
       ctx, 0.85, productImage) as unknown as Record<string, unknown>
     const scenes = (script.scenes as { scene_num: number; beat?: string; action?: string; dialogue?: string }[]) || []
     await log(`Script: "${script.ad_title_hindi}" (${scenes.length} scenes)`)

@@ -28,6 +28,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { runOrEnqueue } = await import('@/lib/pipeline/queue')
   if (action === 'redraft') {
     // Re-roll the storyboard preview (cheap) — don't reuse the old concept.
+    // Move OUT of 'draft' so the UI leaves the stale preview + keeps polling (it re-enters
+    // 'draft' when the new stills are ready). 'draft' alone isn't a polled status.
+    await sql`UPDATE stories SET status = 'generating' WHERE story_id = ${id}`
     await runOrEnqueue(id, 'draft')
     return NextResponse.json({ success: true, action })
   }
@@ -35,6 +38,10 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   // Approve → render the EXACT previewed concept/script (no re-rolling), then queue Veo.
   const meta = { ...(run.operation_ids as Record<string, unknown>), reuseScript: true }
   await sql`UPDATE pipeline_runs SET operation_ids = ${sql.json(JSON.parse(JSON.stringify(meta)))} WHERE story_id = ${id}`
+  // Flip the story to a polled status NOW so the UI immediately switches from the draft preview
+  // to the "Generating" view and keeps polling. In worker mode enqueueJob only touches
+  // pipeline_runs.status, leaving stories.status='draft' → the page would otherwise look frozen.
+  await sql`UPDATE stories SET status = 'queued' WHERE story_id = ${id}`
   await runOrEnqueue(id, 'ad')
   return NextResponse.json({ success: true, action })
 }
