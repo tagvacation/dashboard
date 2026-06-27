@@ -39,11 +39,14 @@ export async function POST(req: NextRequest) {
   }
 
   const cleanId = id.toLowerCase().replace(/\s+/g, '_')
+  // Explicitly active on insert AND on re-add (re-adding a previously-removed account must
+  // reactivate it, otherwise it stays hidden from the list which only shows is_active = true).
   await sql`
-    INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json, user_id)
-    VALUES (${cleanId}, ${name}, ${project_id}, ${''}, ${sa_json}, ${userId})
+    INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json, user_id, is_active)
+    VALUES (${cleanId}, ${name}, ${project_id}, ${''}, ${sa_json}, ${userId}, true)
     ON CONFLICT (id) DO UPDATE SET
-      name = EXCLUDED.name, project_id = EXCLUDED.project_id, sa_json = EXCLUDED.sa_json
+      name = EXCLUDED.name, project_id = EXCLUDED.project_id, sa_json = EXCLUDED.sa_json,
+      is_active = true, user_id = EXCLUDED.user_id
   `
   return NextResponse.json({ success: true })
 }
