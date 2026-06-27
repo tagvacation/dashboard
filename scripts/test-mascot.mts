@@ -41,7 +41,8 @@ const bar = (n: number) => '█'.repeat(Math.round(n)) + '░'.repeat(10 - Math.
 
 const [src] = await sql`SELECT pr.operation_ids, s.user_id FROM pipeline_runs pr JOIN stories s USING(story_id) WHERE pr.story_id = ${SOURCE}`
 if (!src?.operation_ids?.product) { console.error('source product not found:', SOURCE); process.exit(1) }
-const meta = { ...src.operation_ids, product: { ...src.operation_ids.product, duration_sec: SCENES * 8 } }
+// Force compute to the main account (billing on); the source story may carry a dead credentialId.
+const meta = { ...src.operation_ids, credentialId: '', product: { ...src.operation_ids.product, duration_sec: SCENES * 8 } }
 const id = `test_${Date.now()}`
 await sql`INSERT INTO stories (story_id, topic, theme, status, storage_path, category_id, user_id, gcp_credential_id) VALUES (${id}, ${meta.product.name + ' — Mascot Ad'}, 'ai_ad', 'init', ${'stories/' + id + '/'}, 'ai_ad_mascot_drama', ${src.user_id}, ${meta.credentialId || ''})`
 await pipelineDb.create(id)

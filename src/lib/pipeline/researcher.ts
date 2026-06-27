@@ -32,13 +32,11 @@ const ARCHETYPES = `1. hero_vs_villain — a playful antagonist (the problem, pe
 
 /** Gemini with Google Search grounding (returns text — JSON mode can't be combined with search). */
 async function researchGrounded(system: string, user: string, ctx: GcpContext): Promise<string> {
-  // Prefer the free GEMINI_API_KEY (no Vertex credits); fall back to Vertex if no key.
-  const { hasGeminiApiKey, geminiApiGenerate } = await import('./gemini-api')
-  if (hasGeminiApiKey()) {
-    return geminiApiGenerate({ system, parts: [{ text: user }], temperature: 0.6, grounding: true, maxOutputTokens: 2048 })
-  }
-  const token = await getAccessToken(ctx)
-  const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${MODEL}:generateContent`
+  // Run on the dedicated Gemini SA (Vertex) when set, else the caller's ctx.
+  const { geminiContext } = await import('./auth')
+  const gctx = geminiContext() || ctx
+  const token = await getAccessToken(gctx)
+  const url = `https://${gctx.region}-aiplatform.googleapis.com/v1/projects/${gctx.projectId}/locations/${gctx.region}/publishers/google/models/${MODEL}:generateContent`
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

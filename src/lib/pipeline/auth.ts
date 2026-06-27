@@ -61,6 +61,22 @@ export function envContext(): GcpContext | null {
 }
 
 /**
+ * Dedicated GEMINI service account (GEMINI_SA_JSON) for all CHEAP text/vision work via Vertex —
+ * so concept/script/research/critic don't burn the user's or the platform's main credits.
+ * Compute = this SA's project; storage stays main (irrelevant for Gemini). Null if not configured.
+ */
+export function geminiContext(): GcpContext | null {
+  const sa = process.env.GEMINI_SA_JSON
+  if (!sa) return null
+  try {
+    const creds = JSON.parse(sa) as { project_id?: string }
+    if (!creds.project_id) return null
+    const main = mainStorage()
+    return { credentials: creds as Record<string, unknown>, projectId: creds.project_id, region: GCP_REGION, bucket: main?.bucket || '', storageCredentials: main?.creds || (creds as Record<string, unknown>) }
+  } catch { return null }
+}
+
+/**
  * Resolve a USER's GcpContext. COMPUTE (Vertex) runs on the explicitly SELECTED account so quota
  * spreads across accounts; STORAGE is always the main account (handled in contextFromCredential).
  * When no account is explicitly selected, COMPUTE falls back to the main account too. We do NOT

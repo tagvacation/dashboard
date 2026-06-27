@@ -89,24 +89,11 @@ Return STRICT JSON only:
 { "product_fidelity":n, "character_consistency":n, "stays_product":n, "framing":n, "appeal":n, "overall":n, "verdict":"good|mixed|bad", "issues":["..."], "summary":"..." }`
 
 export async function visionJudge(productB64: string, productMime: string, sheetB64: string, productInfo: string, ctx: GcpContext): Promise<Omit<VisualScore, 'storyboard_url'>> {
-  // Prefer the free GEMINI_API_KEY (no Vertex credits); fall back to Vertex if no key.
-  const { hasGeminiApiKey, geminiApiGenerate, parseJsonLoose } = await import('./gemini-api')
-  if (hasGeminiApiKey()) {
-    const text = await geminiApiGenerate({
-      system: RUBRIC, temperature: 0.2, json: true, maxOutputTokens: 4096,
-      parts: [
-        { text: `Product: ${productInfo}\n\nIMAGE 1 = the real product:` },
-        { inlineData: { mimeType: productMime, data: productB64 } },
-        { text: 'IMAGE 2 = the generated ad storyboard:' },
-        { inlineData: { mimeType: 'image/png', data: sheetB64 } },
-        { text: 'Score it. Return JSON only.' },
-      ],
-    })
-    if (!text) throw new Error('vision: empty response')
-    return parseJsonLoose(text) as Omit<VisualScore, 'storyboard_url'>
-  }
-  const token = await getAccessToken(ctx)
-  const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash:generateContent`
+  // Run on the dedicated Gemini SA (Vertex) when set, else the caller's ctx.
+  const { geminiContext } = await import('./auth')
+  const gctx = geminiContext() || ctx
+  const token = await getAccessToken(gctx)
+  const url = `https://${gctx.region}-aiplatform.googleapis.com/v1/projects/${gctx.projectId}/locations/${gctx.region}/publishers/google/models/gemini-2.5-flash:generateContent`
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
