@@ -15,7 +15,7 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [jsonText, setJsonText] = useState('')
-  const [form, setForm] = useState({ id: '', name: '', project_id: '', bucket: '' })
+  const [form, setForm] = useState({ id: '', name: '', project_id: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -43,7 +43,7 @@ export default function AccountsPage() {
 
   const save = async () => {
     if (!jsonText.trim()) { setError('Paste your service account JSON first'); return }
-    if (!form.name || !form.project_id || !form.bucket) { setError('Name, project_id, and bucket are required'); return }
+    if (!form.name || !form.project_id) { setError('Name and project_id are required'); return }
     try { JSON.parse(jsonText) } catch { setError('Invalid JSON'); return }
 
     setSaving(true); setError('')
@@ -55,7 +55,7 @@ export default function AccountsPage() {
     const data = await res.json()
     if (!res.ok) { setError(data.error || 'Save failed'); setSaving(false); return }
     await load()
-    setForm({ id: '', name: '', project_id: '', bucket: '' })
+    setForm({ id: '', name: '', project_id: '' })
     setJsonText('')
     setShowForm(false)
     setSaving(false)
@@ -112,7 +112,7 @@ export default function AccountsPage() {
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-base font-bold">Add Google Cloud Account</h3>
             {creds.length > 0 && (
-              <button onClick={() => { setShowForm(false); setError(''); setJsonText(''); setForm({ id: '', name: '', project_id: '', bucket: '' }) }}
+              <button onClick={() => { setShowForm(false); setError(''); setJsonText(''); setForm({ id: '', name: '', project_id: '' }) }}
                 className="text-white/40 hover:text-white transition-colors text-sm">✕</button>
             )}
           </div>
@@ -144,14 +144,10 @@ export default function AccountsPage() {
                   placeholder="my-project-12345"
                   className="w-full px-3 py-2 text-sm font-mono bg-black/40 border border-white/10 rounded-lg text-white placeholder-white/20 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20" />
               </div>
-              <div className="col-span-2">
-                <label className="text-xs font-semibold text-white/70 block mb-1.5">GCS Bucket</label>
-                <input value={form.bucket} onChange={e => setForm(f => ({ ...f, bucket: e.target.value }))}
-                  placeholder="my-bucket-name"
-                  className="w-full px-3 py-2 text-sm font-mono bg-black/40 border border-white/10 rounded-lg text-white placeholder-white/20 focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20" />
-                <p className="text-xs text-white/40 mt-1">Bucket where your generated assets will be stored</p>
-              </div>
             </div>
+            <p className="text-xs text-white/40">
+              Just the service-account JSON — no bucket needed. Your account is used only for Veo/Imagen compute; storage is handled by the platform.
+            </p>
 
             {error && <p className="text-xs text-red-400 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded-lg">{error}</p>}
 
@@ -175,7 +171,7 @@ export default function AccountsPage() {
                     <p className="font-semibold">{c.name}</p>
                     {c.is_active && <span className="px-1.5 py-0.5 bg-green-500/20 text-green-400 text-xs rounded-full font-medium">Active</span>}
                   </div>
-                  <p className="text-xs text-white/40 mt-0.5 font-mono">{c.project_id} · {c.bucket}</p>
+                  <p className="text-xs text-white/40 mt-0.5 font-mono">{c.project_id}</p>
                 </div>
                 <button onClick={() => remove(c.id, c.name)}
                   className="opacity-0 group-hover:opacity-100 text-white/40 hover:text-red-400 text-xs font-medium transition-all">

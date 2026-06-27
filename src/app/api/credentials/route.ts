@@ -20,10 +20,12 @@ export async function POST(req: NextRequest) {
   catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) }
 
   const body = await req.json()
-  const { id, name, project_id, bucket, sa_json } = body
+  const { id, name, project_id, sa_json } = body
 
-  if (!id || !name || !project_id || !bucket || !sa_json) {
-    return NextResponse.json({ error: 'id, name, project_id, bucket, sa_json all required' }, { status: 400 })
+  // No bucket required: user accounts are COMPUTE-ONLY (Veo/Imagen). Storage always uses the
+  // platform's default account, so there's nothing to configure here.
+  if (!id || !name || !project_id || !sa_json) {
+    return NextResponse.json({ error: 'id, name, project_id, sa_json all required' }, { status: 400 })
   }
 
   // Validate SA JSON
@@ -39,10 +41,9 @@ export async function POST(req: NextRequest) {
   const cleanId = id.toLowerCase().replace(/\s+/g, '_')
   await sql`
     INSERT INTO gcp_credentials (id, name, project_id, bucket, sa_json, user_id)
-    VALUES (${cleanId}, ${name}, ${project_id}, ${bucket}, ${sa_json}, ${userId})
+    VALUES (${cleanId}, ${name}, ${project_id}, ${''}, ${sa_json}, ${userId})
     ON CONFLICT (id) DO UPDATE SET
-      name = EXCLUDED.name, project_id = EXCLUDED.project_id,
-      bucket = EXCLUDED.bucket, sa_json = EXCLUDED.sa_json
+      name = EXCLUDED.name, project_id = EXCLUDED.project_id, sa_json = EXCLUDED.sa_json
   `
   return NextResponse.json({ success: true })
 }
