@@ -78,6 +78,8 @@ function CreateAdInner() {
   // identity + accurate per-view outfit. Face = identity anchor across every scene.
   const [modelViews, setModelViews] = useState<Record<string, { gcsUri: string; preview: string }>>({})
   const [viewUploading, setViewUploading] = useState('')
+  // No model photos? Generate a consistent AI model wearing the product image instead.
+  const [genAiModel, setGenAiModel] = useState(false)
 
   async function fetchFromUrl() {
     if (!productUrl.trim()) return
@@ -150,6 +152,26 @@ function CreateAdInner() {
     } finally {
       setImportingImage(false)
     }
+  }
+
+  // Live Model: assign a FETCHED gallery image to a labeled view (no upload needed).
+  async function assignFetchedToView(imageUrl: string, view: string) {
+    if (!view) return
+    setViewUploading(view); setError('')
+    try {
+      const r = await fetch('/api/ads/import-image', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ imageUrl }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Could not import image')
+      setModelViews(v => {
+        const next = { ...v }
+        for (const k of Object.keys(next)) if (next[k].preview === imageUrl) delete next[k]  // move, don't duplicate
+        next[view] = { gcsUri: d.imageGcsUri, preview: imageUrl }
+        return next
+      })
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not import image') }
+    finally { setViewUploading('') }
   }
 
   // Live Model: upload a labeled reference view (face/front/back/side/closeup) → user bucket.
@@ -232,12 +254,14 @@ function CreateAdInner() {
         cutoutGcsUri = prefill.cutoutGcsUri
       }
 
-      // Live Model: prefer labeled VIEWS (anchored path); else legacy unlabeled multi-angle picks.
-      const modelViewsPayload = adStyle === 'model' && Object.keys(modelViews).length
+      // Live Model: AI model (product only) → no views; else labeled VIEWS (anchored); else legacy picks.
+      const aiModel = adStyle === 'model' && genAiModel
+      const modelViewsPayload = adStyle === 'model' && !aiModel && Object.keys(modelViews).length
         ? Object.fromEntries(Object.entries(modelViews).map(([k, v]) => [k, v.gcsUri]))
         : undefined
-      const modelImages = adStyle === 'model' && !modelViewsPayload ? modelPicks.map(p => p.imageGcsUri) : undefined
-      if (!imageGcsUri) imageGcsUri = (modelViewsPayload?.front || modelViewsPayload?.face || modelImages?.[0]) as string | undefined
+      const modelImages = adStyle === 'model' && !aiModel && !modelViewsPayload ? modelPicks.map(p => p.imageGcsUri) : undefined
+      if (!imageGcsUri && !aiModel) imageGcsUri = (modelViewsPayload?.front || modelViewsPayload?.face || modelImages?.[0]) as string | undefined
+      if (aiModel && !imageGcsUri) { setError('Pick or upload your product image — the AI model needs it to wear/use.'); setSubmitting(false); return }
 
       const res = await fetch('/api/ads/generate', {
         method: 'POST',
@@ -255,6 +279,7 @@ function CreateAdInner() {
           cutoutGcsUri,
           modelImages,
           modelViews: modelViewsPayload,
+          generateModel: aiModel || undefined,
           credentialId: credentialId || null,
           store_id: storeId || undefined,
           product_url: cartMeta.product_url || productUrl.trim() || undefined,
@@ -303,28 +328,64 @@ function CreateAdInner() {
             </button>
           </div>
 
-          {/* Candidate images — single pick for product/mascot, MULTI pick for live model */}
+          {/* Live Model: choose real model photos vs an AI-generated model */}
+          {adStyle === 'model' && (
+            <div className="mt-4 flex flex-col sm:flex-row gap-2">
+              <button type="button" onClick={() => setGenAiModel(false)}
+                className={`flex-1 px-3 py-2.5 rounded-xl border text-sm font-medium transition-all text-left ${!genAiModel ? 'border-purple-400 bg-purple-500/15 text-white' : 'border-white/10 bg-white/[0.03] text-white/60 hover:border-white/30'}`}>
+                🧍 I have model photos
+                <span className="block text-[11px] text-white/40 font-normal">Upload / pick each angle — most accurate</span>
+              </button>
+              <button type="button" onClick={() => setGenAiModel(true)}
+                className={`flex-1 px-3 py-2.5 rounded-xl border text-sm font-medium transition-all text-left ${genAiModel ? 'border-purple-400 bg-purple-500/15 text-white' : 'border-white/10 bg-white/[0.03] text-white/60 hover:border-white/30'}`}>
+                ✨ Only product — generate an AI model
+                <span className="block text-[11px] text-white/40 font-normal">AI creates a consistent model wearing your product</span>
+              </button>
+            </div>
+          )}
+
+          {/* Candidate images. Non-model + AI-model → single product pick. Real-model → assign each to a view. */}
           {candidateImages.length > 0 && (
             <div className="mt-4">
               <p className="text-xs text-white/50 mb-2">
-                {adStyle === 'model'
-                  ? 'Pick the model angles to use (e.g. front + back of the garment)'
-                  : 'Pick the correct product image'}
+                {adStyle === 'model' && !genAiModel
+                  ? 'Assign each fetched image to a view (or upload below)'
+                  : adStyle === 'model'
+                    ? 'Pick the product image the AI model will wear/use'
+                    : 'Pick the correct product image'}
                 {importingImage && <span className="text-purple-300"> · importing…</span>}
               </p>
               <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
                 {candidateImages.map(src => {
-                  const sel = adStyle === 'model' ? modelPicks.some(p => p.src === src) : selectedImage === src
+                  const assignedView = adStyle === 'model' && !genAiModel
+                    ? (['face', 'front', 'back', 'side', 'closeup'].find(k => modelViews[k]?.preview === src) || '')
+                    : ''
+                  const sel = adStyle === 'model' && !genAiModel ? !!assignedView : selectedImage === src
+                  if (adStyle === 'model' && !genAiModel) {
+                    return (
+                      <div key={src} className={`relative rounded-lg overflow-hidden border-2 bg-white/5 ${sel ? 'border-purple-400' : 'border-white/10'}`}>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={src} alt="" className="w-full aspect-square object-contain" />
+                        {assignedView && <span className="absolute top-1 right-1 px-1 rounded bg-purple-500 text-white text-[9px] font-semibold capitalize">{assignedView}</span>}
+                        <select value={assignedView} onChange={e => assignFetchedToView(src, e.target.value)}
+                          className="w-full text-[10px] bg-black/70 border-t border-white/10 px-1 py-1 focus:outline-none text-white/80">
+                          <option value="" className="bg-black">assign…</option>
+                          <option value="face" className="bg-black">Face</option>
+                          <option value="front" className="bg-black">Front</option>
+                          <option value="back" className="bg-black">Back</option>
+                          <option value="side" className="bg-black">Side</option>
+                          <option value="closeup" className="bg-black">Closeup</option>
+                        </select>
+                      </div>
+                    )
+                  }
                   return (
-                    <button key={src} type="button"
-                      onClick={() => adStyle === 'model' ? toggleModelImage(src) : pickImage(src)}
+                    <button key={src} type="button" onClick={() => pickImage(src)}
                       className={`relative aspect-square rounded-lg overflow-hidden border-2 transition-all bg-white/5
                         ${sel ? 'border-purple-400 ring-2 ring-purple-500/30' : 'border-white/10 hover:border-white/30'}`}>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img src={src} alt="" className="w-full h-full object-contain" />
-                      {sel && (
-                        <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>
-                      )}
+                      {sel && <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>}
                     </button>
                   )
                 })}
@@ -332,12 +393,12 @@ function CreateAdInner() {
             </div>
           )}
 
-          {/* Live Model: labeled reference views → anchored, view-accurate generation */}
-          {adStyle === 'model' && (
+          {/* Live Model (real photos): labeled reference views → anchored, view-accurate generation */}
+          {adStyle === 'model' && !genAiModel && (
             <div className="mt-4 bg-white/[0.03] border border-white/10 rounded-xl p-4">
               <p className="text-sm font-semibold mb-1">🧍 Model reference views</p>
               <p className="text-xs text-white/40 mb-3">
-                Upload the model from each angle. <b className="text-white/70">Face</b> locks the identity across every scene; each view anchors that side of the outfit so it stays accurate (no invented backs / changing faces). Face + Front recommended; add Back / Side / Closeup for more shots.
+                Upload each angle, or assign fetched images above. <b className="text-white/70">Face</b> locks the identity across every scene; each view anchors that side of the outfit (no invented backs / changing faces). Face + Front recommended.
               </p>
               <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
                 {[
@@ -367,6 +428,16 @@ function CreateAdInner() {
                   )
                 })}
               </div>
+            </div>
+          )}
+
+          {/* Live Model (AI model): just needs the product image */}
+          {adStyle === 'model' && genAiModel && (
+            <div className="mt-4 bg-purple-500/5 border border-purple-500/20 rounded-xl p-4">
+              <p className="text-sm font-semibold mb-1">✨ AI-generated model</p>
+              <p className="text-xs text-white/40">
+                Pick or upload your <b className="text-white/70">product image</b> (above or in step 3). The AI will create one consistent model wearing/using it across all scenes — no model photos needed.
+              </p>
             </div>
           )}
 

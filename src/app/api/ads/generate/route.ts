@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, modelImages, modelViews, credentialId } = body
+  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, modelImages, modelViews, generateModel, credentialId } = body
   const storeId = body.store_id || ''
   const productUrl = body.product_url || ''
   const productHandle = body.product_handle || ''
@@ -69,6 +69,7 @@ export async function POST(req: NextRequest) {
       modelViews: modelViews && typeof modelViews === 'object'
         ? Object.fromEntries(['face', 'front', 'back', 'side', 'closeup'].map(k => [k, modelViews[k] || null]).filter(([, v]) => v))
         : null,
+      generateModel: !!generateModel,   // product-only → AI generates a consistent model wearing it
       ad_style: adStyle,
       voice: voice && voice !== 'auto' ? voice : null,
       music: musicMood,

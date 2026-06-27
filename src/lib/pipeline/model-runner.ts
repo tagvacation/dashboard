@@ -30,6 +30,7 @@ interface ModelMeta {
   imageGcsUri: string | null       // picked model/product photo → animated directly if present
   modelImages?: string[] | null    // LEGACY: multiple angles, distributed across scenes (no labels)
   modelViews?: ModelViews | null   // labeled views (face/front/back/side/closeup) → ANCHORED path
+  generateModel?: boolean          // product-only → generate a consistent AI model wearing it
   music?: string | null
   credentialId?: string | null
 }
@@ -246,10 +247,53 @@ export async function runModelVideoPipeline(storyId: string): Promise<void> {
       return settleRes(settled)
     }
 
+    // AI MODEL: product-only → generate ONE consistent model wearing the product, then animate it.
+    const runAiModel = async (prodUri: string): Promise<SceneRes[]> => {
+      let aiGcs: string
+      try {
+        const prodBuf = await downloadGsUri(prodUri, ctx)
+        const aiPrompt = `Create a PHOTOREALISTIC fashion photo of an attractive human model naturally wearing/using THIS exact product. Keep the product's real colours, pattern, shape, branding and details 100% accurate. Full-body, the model fills ~75% of a vertical 9:16 frame, standing naturally in a clean stylish lifestyle setting, soft flattering lighting, slightly wide lens so the model is prominent. Professional e-commerce fashion photography, photorealistic, natural skin. No text, no watermark, no logos.`
+        const aiBuf = await to916(await composeImageNano([{ data: prodBuf, mimeType: mimeFor(prodUri) }], aiPrompt, ctx))
+        const aiPath = `stories/${storyId}/model_ai.png`
+        await bucket().file(aiPath).save(aiBuf, { contentType: 'image/png', resumable: false })
+        aiGcs = `gs://${ctx.bucket}/${aiPath}`
+        await log('AI model generated (wearing the product)')
+      } catch (e) {
+        await log(`AI model gen failed (${e instanceof Error ? e.message : e}); falling back to text Imagen`)
+        aiGcs = (await generateMascotToGcs(script.model_image_prompt || (concept.model_image_prompt as string) || 'a photorealistic fashion model in a clean studio, vertical 9:16', ctx, storyId)).gcsUri
+      }
+      const { acquire, release } = pool()
+      const settled = await Promise.allSettled(script.scenes.map(async (scene): Promise<SceneRes> => {
+        await acquire()
+        const sn = String(scene.scene_num).padStart(2, '0')
+        if (await pipelineDb.isCancelled(storyId)) { release(); return { sn, ok: false, filtered: false } }
+        try {
+          await sceneJobsDb.update(storyId, sn, 1, { status: 'submitted' })
+          // One AI model image → animate front-locked with lively per-scene motion (no turning).
+          const base64 = await generateVeoClip(veoViewPrompt('front', scene.motion, setting), ctx, {
+            model: MODEL_VEO_MODEL, imageRef: { gcsUri: aiGcs, mimeType: 'image/png' }, generateAudio: false, attempts: 3,
+          })
+          await saveClip(sn, base64)
+          await sceneJobsDb.update(storyId, sn, 1, { status: 'done' })
+          await log(`  ✓ Scene ${sn} (ai-model)`)
+          release(); return { sn, ok: true, filtered: false }
+        } catch (e) {
+          const err = e instanceof Error ? e.message : String(e)
+          const filtered = err.startsWith('CONTENT_FILTER:')
+          await sceneJobsDb.update(storyId, sn, 1, { status: filtered ? 'filtered' : 'failed', error_message: err })
+          await log(`  ✗ Scene ${sn}: ${err.slice(0, 100)}`)
+          release(); return { sn, ok: false, filtered }
+        }
+      }))
+      return settleRes(settled)
+    }
+
     let results: SceneRes[]
     let usedAiFallback = false
     if (anchored) {
       results = await runAnchored()
+    } else if (meta.generateModel && meta.imageGcsUri) {
+      results = await runAiModel(meta.imageGcsUri)
     } else {
       // LEGACY path: animate the picked photo(s), else generate an AI model.
       let baseImages: string[] = (meta.modelImages && meta.modelImages.length) ? meta.modelImages : (meta.imageGcsUri ? [meta.imageGcsUri] : [])
