@@ -17,7 +17,8 @@
  * account + a compute/storage credential split in the pipeline. See MCP.md.
  */
 import { readFileSync } from 'fs'
-for (const l of readFileSync('.env', 'utf8').split('\n')) { const i = l.indexOf('='); if (i > 0 && !l.startsWith('#')) process.env[l.slice(0, i).trim()] ??= l.slice(i + 1).replace(/^["']|["']$/g, '') }
+// Resolve .env relative to THIS script (repo root) so it works regardless of cwd / which laptop.
+for (const l of readFileSync(new URL('../.env', import.meta.url), 'utf8').split('\n')) { const i = l.indexOf('='); if (i > 0 && !l.startsWith('#')) process.env[l.slice(0, i).trim()] ??= l.slice(i + 1).replace(/^["']|["']$/g, '') }
 
 // CRITICAL: MCP uses stdout for the protocol — redirect all pipeline console.log to stderr.
 console.log = (...a: unknown[]) => console.error(...a)

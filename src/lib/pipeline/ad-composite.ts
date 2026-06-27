@@ -90,7 +90,7 @@ function probeDuration(file: string): Promise<number> {
  * Returns the master's public URL.
  */
 async function uploadFinalWithPreview(ctx: GcpContext, storyId: string, finalPath: string, work: string): Promise<string> {
-  const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+  const bucket = new Storage({ credentials: ctx.storageCredentials }).bucket(ctx.bucket)
   const finalGcsPath = `stories/${storyId}/final/reel.mp4`
   await bucket.file(finalGcsPath).save(await readFile(finalPath), {
     contentType: 'video/mp4', resumable: false, metadata: { cacheControl: 'public, max-age=3600' },
@@ -137,7 +137,7 @@ const VENC = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt'
 const AENC = ['-c:a', 'aac', '-ar', '48000', '-ac', '2', '-b:a', '192k']
 
 export async function composeAd({ storyId, scenes, endcard, productCutoutGcsUri, ctx }: ComposeAdOpts): Promise<string> {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const bucket = storage.bucket(ctx.bucket)
   const work = join(tmpdir(), `adc-${storyId}-${Date.now()}`)
   await mkdir(work, { recursive: true })
@@ -257,7 +257,7 @@ export async function composeAd({ storyId, scenes, endcard, productCutoutGcsUri,
  * optional real-product end-card, concat, and upload. Native dialogue audio is kept.
  */
 export async function composeMascotAd({ storyId, scenes, endcard, productCutoutGcsUri, music: musicMood, ctx }: ComposeMascotOpts): Promise<string> {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const bucket = storage.bucket(ctx.bucket)
   const work = join(tmpdir(), `mas-${storyId}-${Date.now()}`)
   await mkdir(work, { recursive: true })
@@ -376,7 +376,7 @@ export interface ComposeModelOpts {
  * the master + lightweight muted preview. No captions, no end-card.
  */
 export async function composeModelVideo({ storyId, sceneNums, music: musicMood, ctx }: ComposeModelOpts): Promise<string> {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const bucket = storage.bucket(ctx.bucket)
   const work = join(tmpdir(), `mod-${storyId}-${Date.now()}`)
   await mkdir(work, { recursive: true })

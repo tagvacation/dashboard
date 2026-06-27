@@ -37,7 +37,7 @@ function runFfmpeg(args: string[]): Promise<void> {
 }
 
 export async function mergeClipsWithAudio({ storyId, sceneCount, ctx }: MergeOpts): Promise<string> {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const bucket = storage.bucket(ctx.bucket)
 
   const workDir = join(tmpdir(), `merge-${storyId}-${Date.now()}`)

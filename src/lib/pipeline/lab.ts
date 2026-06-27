@@ -23,7 +23,7 @@ function runFfmpeg(a: string[]): Promise<void> {
 
 /** Critique the DRAFT stills (cheap, no Veo): tile the storyboard PNGs + vision-judge them. */
 async function critiqueStills(storyId: string, ctx: Awaited<ReturnType<typeof loadGcpContext>>, productImg: string | null, info: string): Promise<VisualScore> {
-  const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+  const bucket = new Storage({ credentials: ctx.storageCredentials }).bucket(ctx.bucket)
   const [files] = await bucket.getFiles({ prefix: `stories/${storyId}/storyboard/` })
   const pngs = files.filter(f => /scene_\d+\.png$/.test(f.name)).sort((a, b) => a.name.localeCompare(b.name))
   if (!pngs.length) throw new Error('no stills to critique')

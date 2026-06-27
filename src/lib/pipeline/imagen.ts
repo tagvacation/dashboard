@@ -41,7 +41,7 @@ export async function generateMascotToGcs(
 }
 
 async function uploadMascot(buf: Buffer, ctx: GcpContext, storyId: string) {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const path = `stories/${storyId}/mascot.png`
   await storage.bucket(ctx.bucket).file(path).save(buf, { contentType: 'image/png', resumable: false })
   return { gcsUri: `gs://${ctx.bucket}/${path}`, publicUrl: `https://storage.googleapis.com/${ctx.bucket}/${path}` }

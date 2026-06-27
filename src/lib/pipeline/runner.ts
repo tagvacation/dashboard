@@ -28,7 +28,7 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
 // ─── GCS (ctx-aware) ─────────────────────────────────────────────────────────
 
 function makeStorage(ctx: GcpContext) {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const bucket = storage.bucket(ctx.bucket)
   const PUBLIC_BASE = `https://storage.googleapis.com/${ctx.bucket}`
   return { bucket, PUBLIC_BASE }

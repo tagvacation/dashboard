@@ -42,7 +42,7 @@ function runFfmpeg(args: string[]): Promise<void> {
 
 /** Download the clips, sample frames, tile into one contact sheet. Uploads + returns it. */
 export async function buildStoryboard(storyId: string, ctx: GcpContext): Promise<{ buffer: Buffer; url: string }> {
-  const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+  const bucket = new Storage({ credentials: ctx.storageCredentials }).bucket(ctx.bucket)
   const [files] = await bucket.getFiles({ prefix: `stories/${storyId}/clips/` })
   const clips = files.filter(f => f.name.endsWith('.mp4')).sort((a, b) => a.name.localeCompare(b.name))
   if (!clips.length) throw new Error('no clips to storyboard')

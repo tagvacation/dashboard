@@ -74,7 +74,7 @@ export async function runMascotDraft(storyId: string): Promise<void> {
     await pipelineDb.setStep(storyId, 'audio') // reuse label for "asset prep"
     const world = (script.world_description_en as string) || (concept.world_description_en as string) || ''
     const fullMascotPrompt = String(script.mascot_image_prompt || concept.mascot_image_prompt || '')
-    const bucket = new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+    const bucket = new Storage({ credentials: ctx.storageCredentials }).bucket(ctx.bucket)
     const stamp = Date.now()  // cache-bust: regenerate overwrites the same paths, so vary the URL
 
     // Build ONE product-faithful mascot first (nano-banana from the real product photo), then
@@ -97,11 +97,16 @@ export async function runMascotDraft(storyId: string): Promise<void> {
       try {
         let buf: Buffer
         if (mascotBuf) {
-          // Place the SAME mascot into this scene. CRITICAL: lock the product shape — do NOT
-          // pass the "hero action" (it makes nano draw a humanoid superhero). Just set the scene.
-          const scenePrompt = `Show THIS exact mascot (the product object with a cute face) in this setting: ${world}. Keep it 100% IDENTICAL — same product shape, colours and face. It STAYS the product object with a face — NEVER add a human body, arms, legs, torso, or turn it into a person/superhero. Premium Pixar-style 3D, cinematic lighting, vertical 9:16, no text or letters.`
-          buf = await editImageNano(mascotBuf, 'image/png', scenePrompt, ctx)
-            .catch(() => generateImage(`${world}. ${s.action || s.beat || ''}. The product mascot: ${fullMascotPrompt}. Premium Pixar 3D, vertical 9:16, no text.`, ctx))
+          // Place the SAME mascot into this scene. CRITICAL: lock the product's identity AND its
+          // scale/framing. Wide "in this landscape" prompts make nano SHRINK the bottle + add legs
+          // (the #1 cause of the character changing between clips — e.g. a tiny bottle with legs in
+          // a wide field). And ban text — nano paints sign/placard words otherwise. On failure
+          // REUSE the base mascot (never an independent Imagen render → that's a different character).
+          const scenePrompt = `Place THIS exact mascot (the product object with a cute face) onto a new background: ${world}.
+ABSOLUTE CONSISTENCY: keep the mascot 100% IDENTICAL to the input image — same product shape, silhouette, proportions, SIZE, colours, label and face. Do NOT redesign it, do NOT shrink it, do NOT add arms, legs, a body, or turn it into a person/superhero. It stays the product object with a cute face.
+FRAMING (identical in EVERY scene): the mascot is the HERO — centered and large, filling ~70-80% of the vertical 9:16 frame (medium/close shot). NEVER tiny or far away in a wide landscape; the world is only a soft backdrop BEHIND it.
+NO text, words, letters, numbers, signs, placards, speech bubbles or writing anywhere in the image. Premium Pixar-style 3D, cinematic lighting, vertical 9:16.`
+          buf = await editImageNano(mascotBuf, 'image/png', scenePrompt, ctx).catch(() => mascotBuf!)
         } else {
           buf = await generateImage(`${world}. ${s.action || s.beat || ''}. The product mascot: ${fullMascotPrompt}. Premium Pixar-style 3D, cinematic lighting, vertical 9:16, no text or letters.`, ctx)
         }

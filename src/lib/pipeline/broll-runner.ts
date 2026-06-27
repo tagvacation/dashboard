@@ -108,7 +108,7 @@ export async function runBrollAdPipeline(storyId: string): Promise<void> {
           model: BROLL_VEO_MODEL, generateAudio: false, attempts: 3,
         })
         const { Storage } = await import('@google-cloud/storage')
-        await new Storage({ credentials: ctx.credentials }).bucket(ctx.bucket)
+        await new Storage({ credentials: ctx.storageCredentials }).bucket(ctx.bucket)
           .file(`stories/${storyId}/clips/scene_${sn}.mp4`).save(Buffer.from(base64, 'base64'), { contentType: 'video/mp4', resumable: false })
         await sceneJobsDb.update(storyId, sn, 1, { status: 'done' })
         await log(`  ✓ Shot ${sn}`)

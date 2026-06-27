@@ -8,7 +8,7 @@ import type { GcpContext } from './pipeline/auth'
  * per context — do not cache a module-level client tied to env.
  */
 export function bucketForContext(ctx: GcpContext) {
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   return { bucket: storage.bucket(ctx.bucket), publicBase: `https://storage.googleapis.com/${ctx.bucket}` }
 }
 
@@ -68,7 +68,7 @@ export async function downloadGsUri(gsUri: string, ctx: GcpContext): Promise<Buf
   const m = gsUri.match(/^gs:\/\/([^/]+)\/(.+)$/)
   if (!m) throw new Error(`Not a gs:// URI: ${gsUri}`)
   const [, b, p] = m
-  const storage = new Storage({ credentials: ctx.credentials })
+  const storage = new Storage({ credentials: ctx.storageCredentials })
   const [buf] = await storage.bucket(b).file(p).download()
   return buf
 }

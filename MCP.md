@@ -29,23 +29,25 @@ is decoupled from the bucket) but **not wired yet**: it needs (1) a 2nd *working
 so storage stays on main. Until then, both agents share the main account's quota — stagger heavy
 `render:true` runs to avoid 429s.
 
-## Connect (each agent)
-This repo ships a project-scoped `.mcp.json`, so a Claude **in this repo** picks it up automatically
-(approve it on start). For the **other agent** (Claude Desktop / another machine), add:
+## Connect (each agent / each laptop)
+The shared **experiments table lives in the Railway Postgres DB**, and all assets live in the main
+GCS bucket — so two laptops pointed at the same `DATABASE_URL` collaborate on the SAME loop.
 
+On EACH laptop:
+1. `git clone` (or pull) this repo, then `npm install`.
+2. Copy a working `.env` into the repo root — at minimum `DATABASE_URL` (the *same* Railway DB on
+   both, so the log is shared) + `GCS_SERVICE_ACCOUNT_JSON` + `GCS_BUCKET` + `GCP_PROJECT_ID` (the
+   main account, so `run_test` can actually generate). `.env` is gitignored — copy it securely, never
+   via git.
+3. **Claude Code in the repo:** the project-scoped `.mcp.json` is picked up automatically (approve
+   it on start). It uses `npx tsx scripts/mcp-lab.mts` with no hardcoded path, so it's portable.
+4. **Claude Desktop / other client:** add the server manually — point `cwd` at wherever you cloned:
 ```json
-{
-  "mcpServers": {
-    "mascot-lab": {
-      "command": "npx",
-      "args": ["tsx", "scripts/mcp-lab.mts"],
-      "cwd": "/ABSOLUTE/PATH/TO/dashboard"
-    }
-  }
-}
+{ "mcpServers": { "mascot-lab": {
+  "command": "npx", "args": ["tsx", "scripts/mcp-lab.mts"],
+  "cwd": "/ABSOLUTE/PATH/TO/dashboard" } } }
 ```
-It needs the repo + a working `.env` (DATABASE_URL, GCS_* main account). The shared **experiments
-table lives in the DB**, so both agents see the same log regardless of machine.
+Sanity check: `npm run mcp` should print `[mascot-lab MCP] ready (stdio)`.
 
 ## The loop both agents run
 1. `list_experiments` — see what's been tried.
