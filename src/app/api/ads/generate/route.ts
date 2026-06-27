@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null)
   if (!body) return NextResponse.json({ error: 'Invalid body' }, { status: 400 })
 
-  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, modelImages, credentialId } = body
+  const { name, category, price, benefits, ingredients, target_audience, tone, voice, music, duration_sec, imageGcsUri, cutoutGcsUri, modelImages, modelViews, credentialId } = body
   const storeId = body.store_id || ''
   const productUrl = body.product_url || ''
   const productHandle = body.product_handle || ''
@@ -34,13 +34,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'name, category, benefits, target_audience required' }, { status: 400 })
   }
 
-  // Directive: generation runs on the MAIN account. Only honor an explicit, owned credential;
-  // otherwise default to main (credentialId '' → pipeline uses envContext()). We no longer
-  // auto-pick the user's "default" account — the active ones here are misconfigured
-  // (billing disabled / bucket "no-name") and were silently breaking generation.
+  // Generation (Veo + Imagen/nano) runs on the USER'S OWN Cloud account — there is NO platform
+  // default for compute (its credits are reserved for storage only). Cheap text/vision runs on
+  // the free GEMINI_API_KEY. So a valid, owned user credential is REQUIRED here.
   let cred = (credentialId && credentialId !== 'default') ? await gcpCredentialsDb.get(credentialId) : null
   if (cred && cred.user_id !== userId) cred = null // ownership check
-  const resolvedCredId = cred?.id || ''
+  if (!cred) return NextResponse.json({ error: 'ADD_CLOUD_ACCOUNT' }, { status: 400 })
+  const resolvedCredId = cred.id
 
   // Generate story_id
   // URL-safe slug: collapse any non-alphanumeric run (spaces, %, etc.) to '_'.
@@ -65,6 +65,10 @@ export async function POST(req: NextRequest) {
       imageGcsUri: imageGcsUri || null,
       cutoutGcsUri: cutoutGcsUri || null,
       modelImages: Array.isArray(modelImages) && modelImages.length ? modelImages : null,
+      // Labeled live-model views (face/front/back/side/closeup) → enables view-anchored generation.
+      modelViews: modelViews && typeof modelViews === 'object'
+        ? Object.fromEntries(['face', 'front', 'back', 'side', 'closeup'].map(k => [k, modelViews[k] || null]).filter(([, v]) => v))
+        : null,
       ad_style: adStyle,
       voice: voice && voice !== 'auto' ? voice : null,
       music: musicMood,

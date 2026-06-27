@@ -66,20 +66,37 @@ export async function generateMascotFromImage(
  * (generate it once, then "place this exact mascot into scene N") for consistency.
  */
 export async function editImageNano(baseImage: Buffer, mimeType: string, prompt: string, ctx: GcpContext): Promise<Buffer> {
+  return composeImageNano([{ data: baseImage, mimeType }], prompt, ctx)
+}
+
+/**
+ * nano-banana with ONE OR MORE input images. gemini-2.5-flash-image composes across all the
+ * provided images — the key to live-model anchoring: feed [face image, outfit-view image] and it
+ * renders the SAME person wearing the EXACT outfit from that view (identity + view locked together).
+ * Images are applied in order; reference them in the prompt as "the first/second image".
+ */
+export async function composeImageNano(
+  images: { data: Buffer; mimeType: string }[], prompt: string, ctx: GcpContext,
+): Promise<Buffer> {
+  if (!images.length) throw new Error('composeImageNano: no images')
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/gemini-2.5-flash-image:generateContent`
+  const parts = [
+    ...images.map(im => ({ inlineData: { mimeType: im.mimeType, data: im.data.toString('base64') } })),
+    { text: prompt },
+  ]
   const res = await fetchWithRetry(url, {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ inlineData: { mimeType, data: baseImage.toString('base64') } }, { text: prompt }] }],
+      contents: [{ role: 'user', parts }],
       generationConfig: { responseModalities: ['IMAGE'] },
     }),
-  }, { label: 'nano-edit', timeoutMs: 120_000 })
+  }, { label: 'nano-compose', timeoutMs: 120_000 })
   if (!res.ok) throw new Error(`gemini-image ${res.status}: ${(await res.text()).slice(0, 160)}`)
   const data = await res.json()
-  const parts = data.candidates?.[0]?.content?.parts || []
-  const imgPart = parts.find((p: { inlineData?: { data: string } }) => p.inlineData?.data)
+  const rparts = data.candidates?.[0]?.content?.parts || []
+  const imgPart = rparts.find((p: { inlineData?: { data: string } }) => p.inlineData?.data)
   if (!imgPart) throw new Error('gemini-image returned no image')
   return Buffer.from(imgPart.inlineData.data, 'base64')
 }

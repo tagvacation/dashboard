@@ -95,6 +95,16 @@ export async function callGemini(
   temperature = 0.85,
   image?: { data: string; mimeType: string },   // inline product image for grounding
 ): Promise<Record<string, unknown>> {
+  // Prefer the free GEMINI_API_KEY (no Vertex credits) — falls back to Vertex if no key is set.
+  const { hasGeminiApiKey, geminiApiGenerate, parseJsonLoose } = await import('./gemini-api')
+  if (hasGeminiApiKey()) {
+    const parts = []
+    if (image) parts.push({ inlineData: { mimeType: image.mimeType, data: image.data } })
+    parts.push({ text: userPrompt })
+    const text = await geminiApiGenerate({ system: systemPrompt, parts, temperature, json: true, model: GEMINI_MODEL })
+    if (!text) throw new Error('Gemini empty response')
+    return parseJsonLoose(text)
+  }
   const token = await getAccessToken(ctx)
   const url = `https://${ctx.region}-aiplatform.googleapis.com/v1/projects/${ctx.projectId}/locations/${ctx.region}/publishers/google/models/${GEMINI_MODEL}:generateContent`
   const parts: Record<string, unknown>[] = []

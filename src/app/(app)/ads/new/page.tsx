@@ -58,7 +58,7 @@ function CreateAdInner() {
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState('')
   const [creds, setCreds] = useState<CloudCred[]>([])
-  const [credentialId, setCredentialId] = useState<string>('default')
+  const [credentialId, setCredentialId] = useState<string>('')  // user MUST pick their own account (no platform default)
   const [stores, setStores] = useState<{ id: string; name: string }[]>([])
   const [storeId, setStoreId] = useState<string>('')
   // Captured from URL import — needed for the shoppable feed + Shopify add-to-cart.
@@ -74,6 +74,10 @@ function CreateAdInner() {
   const [importingImage, setImportingImage] = useState(false)
   // Live Model can use MULTIPLE angles (e.g. front + back of a garment).
   const [modelPicks, setModelPicks] = useState<{ src: string; imageGcsUri: string }[]>([])
+  // Live Model ANCHORING: labeled reference views (face/front/back/side/closeup) → consistent
+  // identity + accurate per-view outfit. Face = identity anchor across every scene.
+  const [modelViews, setModelViews] = useState<Record<string, { gcsUri: string; preview: string }>>({})
+  const [viewUploading, setViewUploading] = useState('')
 
   async function fetchFromUrl() {
     if (!productUrl.trim()) return
@@ -148,6 +152,22 @@ function CreateAdInner() {
     }
   }
 
+  // Live Model: upload a labeled reference view (face/front/back/side/closeup) → user bucket.
+  async function uploadView(slot: string, file: File) {
+    if (!file.type.startsWith('image/')) { setError('Please choose an image file'); return }
+    if (file.size > 12 * 1024 * 1024) { setError('Image too large (max 12MB)'); return }
+    setViewUploading(slot); setError('')
+    const preview = URL.createObjectURL(file)
+    try {
+      const fd = new FormData(); fd.append('image', file)
+      const r = await fetch('/api/ads/upload-image', { method: 'POST', body: fd })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Upload failed')
+      setModelViews(v => ({ ...v, [slot]: { gcsUri: d.gcsUri, preview } }))
+    } catch (e) { setError(e instanceof Error ? e.message : 'Upload failed') }
+    finally { setViewUploading('') }
+  }
+
   useEffect(() => {
     fetch('/api/credentials').then(r => r.json()).then(d => {
       setCreds(d.credentials || [])
@@ -189,6 +209,7 @@ function CreateAdInner() {
 
   const submit = async () => {
     if (!isValid) { setError('Fill product name, audience, and at least 2 benefits'); return }
+    if (!credentialId) { setError('ADD_CLOUD_ACCOUNT'); return }  // generation runs on the user's own account
     setSubmitting(true); setError('')
 
     try {
@@ -211,9 +232,12 @@ function CreateAdInner() {
         cutoutGcsUri = prefill.cutoutGcsUri
       }
 
-      // Live Model can use multiple angles (front/back). First doubles as grounding image.
-      const modelImages = adStyle === 'model' ? modelPicks.map(p => p.imageGcsUri) : undefined
-      if (modelImages?.length && !imageGcsUri) imageGcsUri = modelImages[0]
+      // Live Model: prefer labeled VIEWS (anchored path); else legacy unlabeled multi-angle picks.
+      const modelViewsPayload = adStyle === 'model' && Object.keys(modelViews).length
+        ? Object.fromEntries(Object.entries(modelViews).map(([k, v]) => [k, v.gcsUri]))
+        : undefined
+      const modelImages = adStyle === 'model' && !modelViewsPayload ? modelPicks.map(p => p.imageGcsUri) : undefined
+      if (!imageGcsUri) imageGcsUri = (modelViewsPayload?.front || modelViewsPayload?.face || modelImages?.[0]) as string | undefined
 
       const res = await fetch('/api/ads/generate', {
         method: 'POST',
@@ -230,7 +254,8 @@ function CreateAdInner() {
           imageGcsUri,
           cutoutGcsUri,
           modelImages,
-          credentialId: credentialId === 'default' ? null : credentialId,
+          modelViews: modelViewsPayload,
+          credentialId: credentialId || null,
           store_id: storeId || undefined,
           product_url: cartMeta.product_url || productUrl.trim() || undefined,
           product_handle: cartMeta.handle || undefined,
@@ -301,6 +326,44 @@ function CreateAdInner() {
                         <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>
                       )}
                     </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Live Model: labeled reference views → anchored, view-accurate generation */}
+          {adStyle === 'model' && (
+            <div className="mt-4 bg-white/[0.03] border border-white/10 rounded-xl p-4">
+              <p className="text-sm font-semibold mb-1">🧍 Model reference views</p>
+              <p className="text-xs text-white/40 mb-3">
+                Upload the model from each angle. <b className="text-white/70">Face</b> locks the identity across every scene; each view anchors that side of the outfit so it stays accurate (no invented backs / changing faces). Face + Front recommended; add Back / Side / Closeup for more shots.
+              </p>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2.5">
+                {[
+                  { key: 'face', label: 'Face', req: true },
+                  { key: 'front', label: 'Front', req: true },
+                  { key: 'back', label: 'Back' },
+                  { key: 'side', label: 'Side' },
+                  { key: 'closeup', label: 'Closeup' },
+                ].map(s => {
+                  const v = modelViews[s.key]
+                  return (
+                    <label key={s.key} className="cursor-pointer block">
+                      <div className={`aspect-[3/4] rounded-lg overflow-hidden border-2 flex items-center justify-center text-center relative bg-white/5 transition-all
+                        ${v ? 'border-purple-400 ring-2 ring-purple-500/20' : 'border-dashed border-white/15 hover:border-white/30'}`}>
+                        {v ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={v.preview} alt={s.label} className="w-full h-full object-cover" />
+                        ) : (
+                          <span className="text-[11px] text-white/40 px-1">{viewUploading === s.key ? 'uploading…' : '+ add'}</span>
+                        )}
+                        {v && <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-purple-500 text-white text-[10px] flex items-center justify-center">✓</span>}
+                      </div>
+                      <p className="text-[10px] text-center mt-1 text-white/50">{s.label}{s.req ? ' *' : ''}</p>
+                      <input type="file" accept="image/*" className="hidden"
+                        onChange={e => { const f = e.target.files?.[0]; if (f) uploadView(s.key, f); e.target.value = '' }} />
+                    </label>
                   )
                 })}
               </div>
@@ -471,31 +534,30 @@ function CreateAdInner() {
           )}
         </FormCard>
 
-        {/* 4. Cloud Account (where compute is billed) */}
+        {/* 4. Cloud Account — generation runs on YOUR account (no platform default) */}
         <div className="bg-white/[0.03] border border-white/10 rounded-2xl p-5">
           <div className="flex items-start justify-between gap-4 mb-3">
             <div>
-              <p className="text-sm font-semibold">☁ Bill compute to</p>
+              <p className="text-sm font-semibold">☁ Your Google Cloud account <span className="text-red-400">*</span></p>
               <p className="text-xs text-white/40 mt-0.5">
-                Veo/TTS/Gemini/Imagen calls run on YOUR Cloud Account. Default = your default account.
+                Veo (video) + Imagen run on <b className="text-white/70">your</b> account. Storage and the AI scripting are on us — you only pay for your own video generation.
               </p>
             </div>
             <Link href="/profile/accounts" className="text-xs text-purple-300 hover:text-purple-200 whitespace-nowrap transition-colors">
               + Add account
             </Link>
           </div>
-          <select value={credentialId} onChange={e => setCredentialId(e.target.value)}
-            className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
-            <option value="default" className="bg-black">My default account</option>
-            {creds.map(c => (
-              <option key={c.id} value={c.id} className="bg-black">
-                {c.name} — {c.project_id}
-              </option>
-            ))}
-          </select>
-          {creds.length === 0 && (
-            <p className="mt-2 text-xs text-white/30">
-              Tip: add your own Google Cloud account in <Link href="/profile/accounts" className="text-purple-300 hover:text-purple-200">Cloud Accounts</Link> to use your free $300 trial credit.
+          {creds.length > 0 ? (
+            <select value={credentialId} onChange={e => setCredentialId(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-black/40 border border-white/10 rounded-xl text-sm focus:outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-500/20 transition-all">
+              <option value="" className="bg-black">Select your Cloud account…</option>
+              {creds.map(c => (
+                <option key={c.id} value={c.id} className="bg-black">{c.name} — {c.project_id}</option>
+              ))}
+            </select>
+          ) : (
+            <p className="text-xs text-amber-300/80">
+              No Cloud account yet. <Link href="/profile/accounts" className="underline font-semibold text-amber-200">Add your Google Cloud account →</Link> to generate — the free $300 trial credit covers a lot of videos.
             </p>
           )}
         </div>
